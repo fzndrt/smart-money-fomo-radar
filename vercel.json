@@ -4,11 +4,5 @@
       "source": "/(.*)",
       "destination": "/api/fomo.py"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/fomo?cron=true",
-      "schedule": "*/5 * * * *"
-    }
   ]
 }
