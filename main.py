@@ -165,8 +165,8 @@ def background_radar_loop():
             time.sleep(10)
 
 def main():
-    # Render otomatis memberikan environment variable PORT (misal: 10000)
-    port = int(os.environ.get("PORT", 10000))
+    # Baca port dari environment (Back4App/Render)
+    port = int(os.environ.get("PORT", 8080))
     server_address = ("0.0.0.0", port)
     
     # Jalankan background worker thread
@@ -174,13 +174,27 @@ def main():
     bg_thread.start()
 
     print(f"==================================================", flush=True)
-    print(f"🚀 SMART MONEY FOMO RADAR RUNNING ON RENDER", flush=True)
+    print(f"🚀 SMART MONEY FOMO RADAR RUNNING ON CONTAINERS", flush=True)
     print(f"📡 Port: {port} | Host: 0.0.0.0", flush=True)
     print(f"🤖 Telegram Bot Ready: {bool(config and config.has_telegram)}", flush=True)
     print(f"==================================================", flush=True)
 
+    # 🚀 KIRIM PESAN OTOMATIS KE TELEGRAM SAAT CONTAINER PERTAMA KALI MENYALA
+    if config and config.has_telegram:
+        startup_msg = (
+            "🚀 *[SMART MONEY FOMO RADAR: ONLINE]*\n\n"
+            "✅ *Container Berhasil Aktif & Terhubung ke Telegram!*\n"
+            "🛡️ *Aturan Pantauan:*\n"
+            "• Koin Belum Runner Puncak (< $1.2M MCap)\n"
+            "• Akumulasi Awal: 1–2 Smart Money Beli\n"
+            "• Rute Jupiter DEX Terverifikasi\n\n"
+            "Radar sedang memantau pergerakan whale 24/7 di latar belakang."
+        )
+        ok, res = send_telegram_direct(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID, startup_msg)
+        if ok:
+            print("[STARTUP] ✅ Notifikasi startup berhasil dikirim ke Telegram!", flush=True)
+        else:
+            print(f"[STARTUP] ⚠️ Gagal kirim notifikasi startup: {res}", flush=True)
+
     httpd = HTTPServer(server_address, RenderHandler)
     httpd.serve_forever()
-
-if __name__ == "__main__":
-    main()
