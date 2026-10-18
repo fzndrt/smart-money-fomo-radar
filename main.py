@@ -55,15 +55,26 @@ def send_telegram_direct(token: str, chat_id: str, text: str) -> tuple[bool, str
 
 class AppHandler(BaseHTTPRequestHandler):
     """HTTP Server Handler untuk Health Check & Kontrol Radar."""
+    
     def log_message(self, format, *args):
-        sys.stdout.write(f"[HTTP] {args[0]} {args[1]} - {args[2]}\n")
-        sys.stdout.flush()
+        # Perbaikan: Menggunakan format % args yang aman dari IndexError
+        try:
+            sys.stdout.write(f"[HTTP] {format % args}\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def do_HEAD(self):
+        # Wajib untuk Health Check Container Back4App/Docker
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        # 1. Health check & Root endpoint (Wajib untuk Back4App)
+        # 1. Health check & Root endpoint
         if path in ("/", "/health"):
             res = {
                 "service": "Smart Money FOMO Radar (Containers)",
@@ -176,8 +187,8 @@ def background_radar_loop():
             time.sleep(10)
 
 def send_startup_notification():
-    """Kirim notifikasi startup ke Telegram tanpa menghambat server."""
-    time.sleep(2)  # Tunggu 2 detik setelah server HTTP siap
+    """Kirim notifikasi startup ke Telegram setelah server aktif."""
+    time.sleep(2)
     if config and config.has_telegram:
         startup_msg = (
             "🚀 *[SMART MONEY FOMO RADAR: ONLINE]*\n\n"
@@ -195,11 +206,10 @@ def send_startup_notification():
             print(f"[STARTUP] ⚠️ Gagal kirim notifikasi startup: {res}", flush=True)
 
 def main():
-    # Baca port dari environment Back4App (default 8080)
     port = int(os.environ.get("PORT", 8080))
     server_address = ("0.0.0.0", port)
     
-    # 1. Buka HTTP Server terlebih dahulu agar lolos health check
+    # 1. Buka HTTP Server terlebih dahulu
     httpd = HTTPServer(server_address, AppHandler)
     print(f"==================================================", flush=True)
     print(f"🚀 SMART MONEY FOMO RADAR RUNNING ON CONTAINERS", flush=True)
@@ -207,15 +217,15 @@ def main():
     print(f"🤖 Telegram Bot Ready: {bool(config and config.has_telegram)}", flush=True)
     print(f"==================================================", flush=True)
 
-    # 2. Jalankan background worker scanner
+    # 2. Jalankan background scanner
     bg_thread = threading.Thread(target=background_radar_loop, daemon=True)
     bg_thread.start()
 
-    # 3. Jalankan notifikasi pembuka Telegram di background
+    # 3. Jalankan notifikasi Telegram pembuka
     startup_thread = threading.Thread(target=send_startup_notification, daemon=True)
     startup_thread.start()
 
-    # 4. Layani request selamanya
+    # 4. Layani HTTP Health Check & requests
     httpd.serve_forever()
 
 if __name__ == "__main__":
