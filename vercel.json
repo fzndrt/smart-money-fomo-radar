@@ -1,8 +1,6 @@
-{
-  "rewrites": [
+"crons": [
     {
-      "source": "/(.*)",
-      "destination": "/api/fomo"
+      "path": "/api/fomo?cron=true",
+      "schedule": "0 0 * * *"
     }
-  ]
-}
+]
