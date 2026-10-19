@@ -1,2 +1,12 @@
+[project]
+name = "smart-money-fomo-radar"
+version = "0.1.0"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "urllib3>=2.0.0",
+]
+
 [tool.vercel]
 entrypoint = "api.fomo:handler"
