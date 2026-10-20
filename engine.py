@@ -473,10 +473,15 @@ class SmartMoneyLedger:
 # 5. SMART MONEY & INSIDER EVALUATION ENGINE (DENGAN 4 ATURAN ADAPTIF)
 # ==============================================================================
 class SmartMoneyEngine:
-    def __init__(self, cfg: FomoConfig = config, ledger: SmartMoneyLedger = None):
-        self.cfg = cfg
-        self.ledger = ledger or SmartMoneyLedger(getattr(cfg, "DATABASE_PATH", None))
-
+    def __init__(self, cfg: Any = None, ledger: SmartMoneyLedger = None):
+        # Otomatis menyelesaikan apakah cfg adalah instans FomoConfig atau modul config
+        if cfg is None:
+            self.cfg = getattr(config, "config", config)
+        elif hasattr(cfg, "config") and isinstance(getattr(cfg, "config"), FomoConfig):
+            self.cfg = getattr(cfg, "config")
+        else:
+            self.cfg = cfg
+        self.ledger = ledger or SmartMoneyLedger(getattr(self.cfg, "DATABASE_PATH", None))
     def evaluate_trade(self, event: TradeEvent) -> Tuple[bool, str, Optional[dict]]:
         """
         Evaluasi lengkap transaksi terhadap seluruh kriteria:
