@@ -42,11 +42,15 @@ class FomoConfig:
     # =========================================================================
     # 3. MODUL TAMBAHAN BARU: INSIDER & EARLY ALPHA RADAR (SEPERTI @ZypherHQ)
     # =========================================================================
-    ENABLE_INSIDER_RADAR: bool = True             # Mengaktifkan deteksi insider/KOL awal
-    MIN_INSIDER_BUY_USD: float = float(os.getenv("MIN_INSIDER_BUY_USD", "500.0")) # Min $1,000 (kasus Zypher $1,400)
-    MIN_INSIDER_MCAP_USD: float = float(os.getenv("MIN_INSIDER_MCAP_USD", "25000.0")) # Min MC $25k (hindari bot spam)
-    MAX_INSIDER_MCAP_USD: float = float(os.getenv("MAX_INSIDER_MCAP_USD", "250000.0"))# Maks MC $250k (Sweet spot insider)
-
+    ENABLE_INSIDER_RADAR: bool = True                   # Mengaktifkan deteksi insider/KOL awal
+    MIN_INSIDER_BUY_USD: float = 500.0                  # Sweet spot beli $500 USD (~3 SOL)
+    MIN_INSIDER_MCAP_USD: float = 25000.0               # Minimal MC $25k (hindari bot spam)
+    MAX_INSIDER_MCAP_USD: float = 250000.0              # Maksimal MC $250k (Sweet spot $VEIL di $64k)
+    REQUIRE_INSIDER_NEW_WALLET: bool = True             # Wajib Fresh New Wallet
+    MAX_INSIDER_PREVIOUS_BUYS: int = 1                  # Maks 1 riwayat token sebelumnya
+    MAX_INSIDER_SUPPLY_PCT: float = 3.5                 # Maksimal 3.5% suplai (distribusi terpecah rapi, anti dev monopoli)
+    REQUIRE_INSIDER_ZERO_SELL: bool = True              # Wajib Zero Sell di fase awal akumulasi
+    
     # On-Chain Safety Guard (Anti-Rug & Anti-Honeypot via Solana RPC)
     ENFORCE_ONCHAIN_SAFETY: bool = True           # Cek mintAuthority == null & freezeAuthority == null
     MIN_LIQUIDITY_USD: float = float(os.getenv("MIN_LIQUIDITY_USD", "8000.0"))        # Minimal likuiditas pool $8k USD
