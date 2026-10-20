@@ -32,8 +32,7 @@ import time
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List, Optional, Tuple
 try:
     from config import FomoConfig, config
 except ImportError:
