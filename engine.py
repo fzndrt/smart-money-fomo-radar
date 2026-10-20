@@ -488,14 +488,18 @@ class SmartMoneyEngine:
         self.ledger = ledger or SmartMoneyLedger(getattr(cfg, "DATABASE_PATH", None))
 
     def evaluate_trade(self, event: TradeEvent) -> Tuple[bool, str, Optional[dict]]:
+def evaluate_trade(self, event: TradeEvent) -> Tuple[bool, str, Optional[dict]]:
         """
-        Evaluasi lengkap transaksi:
-        - Modul 1: Top 100 Smart Money Filter (100% Utuh)
-        - Modul 2: Insider Alpha Radar (Kasus @ZypherHQ: MC $64k, Beli $1.400)
+        Evaluasi lengkap transaksi terhadap seluruh kriteria:
+        1. Modul Asli: Top 100 Smart Money Filter (100% UTUH TIDAK DIGANGGU)
+        2. Modul Baru: Insider Alpha Radar (Khusus transaksi gaya @ZypherHQ di MC awal $25k-$250k)
         """
+        # 1. Action Check (Hanya Buys yang diproses untuk alert, Sells dicatat ke ledger)
         if not event.is_buy:
+            self.ledger.record_sell(event.wallet, event.token_mint, event.amount_usd)
             return False, "SKIP: Transaksi penjualan / exit", None
 
+        # Identifikasi tipe dompet: Apakah Top 100, Insider Khusus, atau keduanya?
         is_top100 = event.wallet in TOP_100_WALLETS
         is_insider = (event.wallet in INSIDER_WALLETS) or ("zypher" in event.wallet.lower())
 
@@ -503,7 +507,7 @@ class SmartMoneyEngine:
             return False, f"SKIP: Dompet bukan Top 100 Smart Money atau Insider Alpha ({event.wallet[:6]}...)", None
 
         # ----------------------------------------------------------------------
-        # JALUR 1: DETEKSI INSIDER ALPHA (Gaya @ZypherHQ di MC $64k, Beli $1.400)
+        # JALUR 1: DETEKSI INSIDER ALPHA (Logika Cabal Sejati & Kasus $VEIL)
         # ----------------------------------------------------------------------
         if is_insider:
             insider_info = INSIDER_WALLETS.get(
@@ -518,24 +522,59 @@ class SmartMoneyEngine:
                 )
             )
 
-            # Cek Nominal Beli Insider
-            if event.amount_usd < self.cfg.MIN_INSIDER_BUY_USD:
-                return False, f"SKIP (INSIDER): Nominal beli ${event.amount_usd:,.2f} di bawah batas insider ${self.cfg.MIN_INSIDER_BUY_USD:,.2f}", None
+            # 1. Cek Nominal Beli Insider (Titik Emas $500 USD / ~3 SOL)
+            min_insider_buy = getattr(self.cfg, "MIN_INSIDER_BUY_USD", 500.0)
+            if event.amount_usd < min_insider_buy:
+                return False, f"SKIP (INSIDER): Nominal beli ${event.amount_usd:,.2f} di bawah batas minimal ${min_insider_buy:,.2f}", None
 
-            # Cek Zona Sweet Spot Market Cap Insider ($25k - $250k)
+            # 2. Cek Anti-Koin Merah / Dump (Momentum Wajib Hijau Positif)
+            if event.price_drift_pct < 0.0:
+                return False, f"SKIP (KOIN MERAH / DUMP): Pergerakan harga koin minus ({event.price_drift_pct:.1f}%). Syarat: Wajib momentum hijau.", None
+
+            # 3. Disiplin Tahan (Zero Selling / Diamond Hands Awal)
+            # Insider sejati tidak menjual token di awal sebelum marketing push
+            if getattr(self.cfg, "REQUIRE_INSIDER_ZERO_SELL", True):
+                if self.ledger.has_wallet_sold_token(event.wallet, event.token_mint):
+                    return False, "SKIP (INSIDER FLIPPER): Dompet pernah melakukan penjualan token ini sebelumnya. Syarat Cabal: Zero Selling / Diamond Hands di awal.", None
+
+            # 4. Cek Distribusi Suplai Cabal (Anti-Monopoli Dev Dump)
+            # Pembelian 1 dompet maksimal 3.5% suplai (pola cabal rapi 1% - 2.5% per wallet)
+            max_supply_pct = getattr(self.cfg, "MAX_INSIDER_SUPPLY_PCT", 3.5)
+            est_supply_pct = 1.0
+            if event.market_cap_usd > 0:
+                est_supply_pct = (event.amount_usd / event.market_cap_usd) * 100.0
+                if est_supply_pct > max_supply_pct:
+                    return False, f"SKIP (SUPLAI MONOPOLI): Pembelian {est_supply_pct:.1f}% suplai melebihi batas {max_supply_pct:.1f}%. Syarat Cabal: Distribusi terpecah rapi (1-3% per dompet).", None
+
+            # 5. Syarat Mutlak Kasus $VEIL: Wajib Fresh New Wallet
+            # Bukan dompet yang sering beli puluhan koin lain sebelumnya
+            if getattr(self.cfg, "REQUIRE_INSIDER_NEW_WALLET", True):
+                prev_buys = self.ledger.get_wallet_total_token_buys(event.wallet)
+                max_prev = getattr(self.cfg, "MAX_INSIDER_PREVIOUS_BUYS", 1)
+                if prev_buys > max_prev:
+                    return False, f"SKIP (BUKAN NEW WALLET): Dompet pernah membeli {prev_buys} koin lain sebelumnya. Syarat $VEIL: Fresh New Wallet.", None
+
+                is_new, tx_count, new_msg = check_is_new_wallet(event.wallet, self.cfg.SOLANA_RPC_URL)
+                if not is_new:
+                    return False, f"SKIP (BUKAN NEW WALLET): {new_msg}. Syarat $VEIL: Fresh New Wallet.", None
+
+            # 6. Cek Zona Sweet Spot Market Cap Insider ($25k - $250k)
+            # Contoh: MC $64k masuk sangat sempurna di dalam rentang ini!
             if event.market_cap_usd < self.cfg.MIN_INSIDER_MCAP_USD:
                 return False, f"SKIP (MICRO NOISE): Market cap ${event.market_cap_usd:,.0f} terlalu mikro (< ${self.cfg.MIN_INSIDER_MCAP_USD:,.0f})", None
 
             if event.market_cap_usd > self.cfg.MAX_INSIDER_MCAP_USD:
+                # Jika MC di atas $250k tapi masih di bawah $2.0M, biarkan dievaluasi lewat Jalur Top 100 jika dompet juga top 100
                 if not is_top100:
                     return False, f"SKIP (BUKAN SWEET SPOT INSIDER): Market cap ${event.market_cap_usd:,.0f} melebihi batas sweet spot insider (${self.cfg.MAX_INSIDER_MCAP_USD:,.0f})", None
 
-            # On-Chain Safety Shield (Solana RPC)
+            # 7. On-Chain Safety Shield (Solana RPC: mintAuthority & freezeAuthority null)
             if self.cfg.ENFORCE_ONCHAIN_SAFETY:
                 is_safe, safety_reason, _ = check_onchain_safety(event.token_mint, self.cfg.SOLANA_RPC_URL)
                 if not is_safe:
                     return False, f"SKIP (ON-CHAIN RISK): {safety_reason}", None
 
+            # Catat pembelian ke ledger
             self.ledger.record_buy(
                 event.wallet, event.token_mint, event.entry_price_usd, event.amount_usd, event.signature
             )
@@ -543,6 +582,8 @@ class SmartMoneyEngine:
             recent_whales = self.ledger.get_recent_whales_for_token(event.token_mint, self.cfg.CONVERGENCE_WINDOW_SEC)
             other_whales = [w for w in recent_whales if w != event.wallet]
             stage = len(other_whales) + 1
+
+            # Tentukan apakah ada konvergensi dengan Smart Money lain
             alert_type = "HYBRID_ALPHA_CONVERGENCE" if stage > 1 else "INSIDER_ALPHA_ALERT"
 
             payload = {
@@ -558,6 +599,7 @@ class SmartMoneyEngine:
                 "avg_peak_gain": 2400.0,
                 "pnl_30d_usd": 3200000,
                 "amount_usd": event.amount_usd,
+                "est_supply_pct": round(est_supply_pct, 2),
                 "entry_price": event.entry_price_usd,
                 "market_cap_usd": event.market_cap_usd,
                 "whale_stage": stage,
@@ -576,6 +618,93 @@ class SmartMoneyEngine:
                 event.token_mint, event.token_symbol, event.wallet, alert_type, event.market_cap_usd, stage
             )
             return True, f"LOLOS: Sinyal Emas Insider Alpha ({insider_info.handle}) di MC ${event.market_cap_usd:,.0f}!", payload
+
+        # ----------------------------------------------------------------------
+        # JALUR 2: MODUL ASLI TOP 100 SMART MONEY (100% UTUH TIDAK BERUBAH)
+        # ----------------------------------------------------------------------
+        wallet_info = TOP_100_WALLETS[event.wallet]
+
+        # 3. Win-Rate & Multiplier Threshold
+        is_elite = (wallet_info.win_rate >= self.cfg.MIN_WIN_RATE_PCT) or (wallet_info.avg_peak_gain >= self.cfg.MIN_AVG_PEAK_GAIN_PCT)
+        if not is_elite:
+            return False, f"SKIP: Metrik {wallet_info.name} di bawah batas (WR {wallet_info.win_rate}%, Gain +{wallet_info.avg_peak_gain}%)", None
+
+        # 4. First-Time Buy Check
+        if not self.ledger.is_first_time_buy(event.wallet, event.token_mint):
+            return False, f"SKIP (REBUY/DCA): {wallet_info.name} sudah pernah membeli {event.token_symbol} sebelumnya", None
+
+        # 5. Minimum Buy Amount Check
+        if event.amount_usd < self.cfg.MIN_BUY_USD:
+            return False, f"SKIP: Nominal pembelian ${event.amount_usd:,.2f} di bawah batas ${self.cfg.MIN_BUY_USD:,.2f}", None
+
+        # 6. Filter Koin Belum Runner Puncak (< $2.0M USD)
+        if self.cfg.PRE_PEAK_ONLY and event.market_cap_usd > self.cfg.MAX_RUNNER_MCAP_USD:
+            return False, (
+                f"SKIP (SUDAH PUNCAK RUNNER): Market cap ${event.market_cap_usd:,.0f} "
+                f"melebihi batas pre-peak runner (${self.cfg.MAX_RUNNER_MCAP_USD:,.0f}). "
+                f"Fokus hanya koin awal sebelum lonjakan puncak!"
+            ), None
+
+        # 7. Batas Akumulasi Awal (Maksimal 2-3 Whale)
+        recent_whales = self.ledger.get_recent_whales_for_token(event.token_mint, self.cfg.CONVERGENCE_WINDOW_SEC)
+        other_whales = [w for w in recent_whales if w != event.wallet]
+        current_whale_stage = len(other_whales) + 1
+
+        if current_whale_stage > self.cfg.MAX_SMART_MONEY_INFLOW:
+            return False, (
+                f"SKIP (BUKAN AKUMULASI AWAL): Sudah ada {len(other_whales)} Smart Money lain masuk. "
+                f"Batas akumulasi awal adalah maks {self.cfg.MAX_SMART_MONEY_INFLOW} whale."
+            ), None
+
+        # 8. Rute Swap Aktif Jupiter DEX
+        if self.cfg.JUPITER_ONLY:
+            has_route = check_jupiter_route(event.token_mint)
+            if not has_route:
+                return False, f"SKIP: Token {event.token_symbol} belum memiliki rute swap aktif di Jupiter (jup.ag)", None
+
+        # 9. Anti-Chasing / Price Drift Filter
+        if event.price_drift_pct > self.cfg.MAX_PRICE_DRIFT_PCT:
+            return False, f"SKIP (PRICE DRIFT): Harga sudah naik +{event.price_drift_pct:.1f}% melebihi batas {self.cfg.MAX_PRICE_DRIFT_PCT}%", None
+
+        # Catat pembelian Smart Money ke ledger
+        self.ledger.record_buy(
+            event.wallet, event.token_mint, event.entry_price_usd, event.amount_usd, event.signature
+        )
+
+        is_convergence = len(other_whales) >= 1
+        convergence_whales = [TOP_100_WALLETS.get(w) for w in other_whales if w in TOP_100_WALLETS]
+        alert_type = "DUAL_WHALE_CONVERGENCE" if is_convergence else "FIRST_SMART_MONEY_ENTRY"
+
+        payload = {
+            "token_symbol": event.token_symbol,
+            "token_mint": event.token_mint,
+            "wallet": event.wallet,
+            "wallet_name": wallet_info.name,
+            "wallet_rank": wallet_info.rank,
+            "win_rate": wallet_info.win_rate,
+            "avg_peak_gain": wallet_info.avg_peak_gain,
+            "pnl_30d_usd": wallet_info.pnl_30d_usd,
+            "amount_usd": event.amount_usd,
+            "entry_price": event.entry_price_usd,
+            "market_cap_usd": event.market_cap_usd,
+            "whale_stage": current_whale_stage,
+            "is_pre_peak": True,
+            "is_insider": False,
+            "is_convergence": is_convergence,
+            "convergence_whales": [w.name for w in convergence_whales if w],
+            "alert_type": alert_type,
+            "safety_status": "Verified Jupiter Routing",
+            "jupiter_swap_url": f"https://jup.ag/swap/SOL-{event.token_mint}",
+            "dexscreener_url": f"https://dexscreener.com/solana/{event.token_mint}",
+            "signature": event.signature,
+            "timestamp": time.time()
+        }
+
+        self.ledger.record_alert(
+            event.token_mint, event.token_symbol, event.wallet, alert_type, event.market_cap_usd, current_whale_stage
+        )
+
+        return True, "LOLOS: Akumulasi Awal Pre-Peak Lolos Verifikasi!", payload
 
         # ----------------------------------------------------------------------
         # JALUR 2: MODUL ASLI TOP 100 SMART MONEY (100% UTUH)
