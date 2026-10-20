@@ -607,21 +607,52 @@ async def on_token_event(data: dict):
 
     tok["history"].append({"time": current_time, "is_buy": is_buy, "val": usd_val})
 
-    # Filter Ketat Pump.fun
-    if mc < 18000.0 or mc > 70000.0:
+    # === JALUR EKSPRES ZERO BLIND TIME (BYPASS FILTER UNTUK SMART MONEY / INSIDER) ===
+    trader_pk = data.get("traderPublicKey", "")
+    is_insider_or_whale = (
+        trader_pk in INSIDER_WALLETS or 
+        trader_pk in TOP_100_WALLETS or 
+        "zypher" in str(trader_pk).lower()
+    )
+
+    if is_insider_or_whale and is_buy:
+        trade_evt = TradeEvent(
+            wallet=trader_pk,
+            token_mint=mint,
+            token_symbol=symbol,
+            amount_usd=usd_val,
+            token_amount=float(data.get("tokenAmount", 0.0) or 0.0),
+            entry_price_usd=mc / 1_000_000_000.0 if mc > 0 else 0.0001,
+            current_price_usd=mc / 1_000_000_000.0 if mc > 0 else 0.0001,
+            market_cap_usd=mc,
+            price_drift_pct=0.0,
+            signature=data.get("signature", f"ws-{int(time.time()*1000)}"),
+            is_buy=True
+        )
+        eligible, reason, payload = smart_money_engine.evaluate_trade(trade_evt)
+        if eligible and payload and TELEGRAM_BOT_TOKEN:
+            smart_money_engine.send_telegram_alert(payload)
+            state.mark_alerted(mint)
+            return
+
+    # === FILTER PUMPFUN DENGAN PELONGGARAN CERDAS ===
+    # 1. Rentang Market Cap Sweet Spot ($15k - $120k)
+    if mc < 15000.0 or mc > 120000.0:
         return
 
+    # 2. Kurva Bonding Dilonggarkan (20% - 92% agar menangkap pre-Raydium rally)
     bonding_pct = min(100.0, (tok["bonding_curve"] / 85.0) * 100.0) if tok["bonding_curve"] > 0 else 0.0
-    if bonding_pct > 0 and (bonding_pct < 25.0 or bonding_pct > 80.0):
+    if bonding_pct > 0 and (bonding_pct < 20.0 or bonding_pct > 92.0):
         return
 
+    # 3. Batas Umur Koin Dilonggarkan (Cukup 3 menit akumulasi organik)
     age_mins = (current_time - tok["first_seen"]) / 60.0
-    if age_mins < 10.0:
+    if age_mins < 3.0:
         return
 
-    # Pengecekan On-chain Konkuren
+    # Pengecekan On-chain Konkuren Cepat
     audit_res, _ = await perform_concurrent_token_audit(mint)
-    if not audit_res["is_overall_safe"] or audit_res["top_holder"] > 10.0:
+    if not audit_res["is_overall_safe"] or audit_res["top_holder"] > 12.0:
         return
 
     eval_payload = {
@@ -630,13 +661,13 @@ async def on_token_event(data: dict):
         "volume": tok["volume"],
         "liquidity": {"usd": mc * 0.4},
         "marketCap": mc,
-        "devHoldingPercent": 1.2,
+        "devHoldingPercent": 1.5,
         "topHolderPercent": audit_res["top_holder"],
         "uniqueBuyersCount": tok["txns"]["m5"]["buys"]
     }
 
     eval_res = analyzer.evaluate_token(eval_payload)
-    if eval_res.get("is_approved") and eval_res.get("score", 0) >= 80:
+    if eval_res.get("is_approved") and eval_res.get("score", 0) >= 75:
         stats["gems_found"] += 1
         extra = f"📈 <b>Kurva Bonding:</b> <code>{bonding_pct:.1f}% Terisi</code>"
         text = format_telegram_alert(name, symbol, mint, eval_res, mc, "PUMPFUN", extra)
@@ -644,7 +675,7 @@ async def on_token_event(data: dict):
         sent = send_telegram_direct(TELEGRAM_CHAT_ID, text)
         if sent:
             state.mark_alerted(mint)
-            logger.info(f"💎 GEM ASLI TERDETEKSI (🟡 PUMP.FUN): {name} (${symbol}) | MC: ${mc:,.0f}!")
+            logger.info(f"💎 GEM TERDETEKSI (🟡 PUMP.FUN): {name} (${symbol}) | MC: ${mc:,.0f}!")
 
 def run_websocket_loop():
     loop = asyncio.new_event_loop()
