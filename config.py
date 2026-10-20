@@ -43,7 +43,7 @@ class FomoConfig:
     # 3. MODUL TAMBAHAN BARU: INSIDER & EARLY ALPHA RADAR (SEPERTI @ZypherHQ)
     # =========================================================================
     ENABLE_INSIDER_RADAR: bool = True             # Mengaktifkan deteksi insider/KOL awal
-    MIN_INSIDER_BUY_USD: float = float(os.getenv("MIN_INSIDER_BUY_USD", "1000.0")) # Min $1,000 (kasus Zypher $1,400)
+    MIN_INSIDER_BUY_USD: float = float(os.getenv("MIN_INSIDER_BUY_USD", "500.0")) # Min $1,000 (kasus Zypher $1,400)
     MIN_INSIDER_MCAP_USD: float = float(os.getenv("MIN_INSIDER_MCAP_USD", "25000.0")) # Min MC $25k (hindari bot spam)
     MAX_INSIDER_MCAP_USD: float = float(os.getenv("MAX_INSIDER_MCAP_USD", "250000.0"))# Maks MC $250k (Sweet spot insider)
 
