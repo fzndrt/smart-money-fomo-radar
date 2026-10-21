@@ -669,14 +669,16 @@ async def on_token_event(data: dict):
     eval_res = analyzer.evaluate_token(eval_payload)
     if eval_res.get("is_approved") and eval_res.get("score", 0) >= 75:
         stats["gems_found"] += 1
-        extra = f"📈 <b>Kurva Bonding:</b> <code>{bonding_pct:.1f}% Terisi</code>"
-        text = format_telegram_alert(name, symbol, mint, eval_res, mc, "PUMPFUN", extra)
+        state.mark_alerted(mint)
         
-        sent = send_telegram_direct(TELEGRAM_CHAT_ID, text)
-        if sent:
-            state.mark_alerted(mint)
+        # Mode Eksklusif Telegram: Lewati koin umum yang tidak didukung Smart Money / Insider
+        if getattr(config, "ONLY_SMART_MONEY_AND_INSIDER_ALERTS", True):
+            logger.info(f"ℹ️ [LOG PUMP.FUN ORGANIC (TELEGRAM MUTED)]: {name} (${symbol}) | MC: ${mc:,.0f}")
+        else:
+            extra = f"📈 <b>Kurva Bonding:</b> <code>{bonding_pct:.1f}% Terisi</code>"
+            text = format_telegram_alert(name, symbol, mint, eval_res, mc, "PUMPFUN", extra)
+            send_telegram_direct(TELEGRAM_CHAT_ID, text)
             logger.info(f"💎 GEM TERDETEKSI (🟡 PUMP.FUN): {name} (${symbol}) | MC: ${mc:,.0f}!")
-
 def run_websocket_loop():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -815,11 +817,14 @@ async def evaluate_single_dex_mint_concurrent(mint: str, sem: asyncio.Semaphore)
                 f"⚡ <b>Latency Audit:</b> <code>{lat_ms:.1f} ms (asyncio.gather)</code>"
             ]
             eval_res["score"] = score
-            text = format_telegram_alert(name, sym, mint, eval_res, mc, badge_tipe, "\n".join(extra_lines))
+            state.mark_alerted(mint)
             
-            sent = send_telegram_direct(TELEGRAM_CHAT_ID, text)
-            if sent:
-                state.mark_alerted(mint)
+            # Mode Eksklusif Telegram: Lewati koin umum DEX yang tidak didukung Smart Money / Insider
+            if getattr(config, "ONLY_SMART_MONEY_AND_INSIDER_ALERTS", True):
+                logger.info(f"ℹ️ [LOG DEX ORGANIC (TELEGRAM MUTED)]: {name} (${sym}) | MC: ${mc:,.0f} | Liq: ${liq_usd:,.0f}")
+            else:
+                text = format_telegram_alert(name, sym, mint, eval_res, mc, badge_tipe, "\n".join(extra_lines))
+                send_telegram_direct(TELEGRAM_CHAT_ID, text)
                 logger.info(f"💎 GEM TERDETEKSI ({badge_tipe}): {name} (${sym}) | MC: ${mc:,.0f} | Liq: ${liq_usd:,.0f}!")
 
 async def poll_dexscreener_concurrent_loop():
