@@ -50,7 +50,7 @@ class FomoConfig:
     MAX_INSIDER_PREVIOUS_BUYS: int = 1                  # Maks 1 riwayat token sebelumnya
     MAX_INSIDER_SUPPLY_PCT: float = 3.5                 # Maksimal 3.5% suplai (distribusi terpecah rapi, anti dev monopoli)
     REQUIRE_INSIDER_ZERO_SELL: bool = True              # Wajib Zero Sell di fase awal akumulasi
-    
+
     # On-Chain Safety Guard (Anti-Rug & Anti-Honeypot via Solana RPC)
     ENFORCE_ONCHAIN_SAFETY: bool = True           # Cek mintAuthority == null & freezeAuthority == null
     MIN_LIQUIDITY_USD: float = float(os.getenv("MIN_LIQUIDITY_USD", "8000.0"))        # Minimal likuiditas pool $8k USD
@@ -59,6 +59,9 @@ class FomoConfig:
     # =========================================================================
     # 4. SISTEM & PERSISTENSI DATABASE
     # =========================================================================
+    # Mode Eksklusif Telegram: HANYA Sinyal Smart Money & Insider (Mute Koin Umum/Dump Trap)
+    ONLY_SMART_MONEY_AND_INSIDER_ALERTS: bool = True
+
     DATABASE_PATH: str = os.getenv(
         "DATABASE_PATH",
         "/tmp/smart_money_ledger.db" if os.getenv("VERCEL") else "smart_money_ledger.db"
@@ -70,3 +73,13 @@ class FomoConfig:
 
 
 config = FomoConfig()
+
+# Expose atribut tingkat modul untuk kompatibilitas kebal galat
+ONLY_SMART_MONEY_AND_INSIDER_ALERTS = config.ONLY_SMART_MONEY_AND_INSIDER_ALERTS
+CONVERGENCE_WINDOW_SEC = config.CONVERGENCE_WINDOW_SEC
+TELEGRAM_BOT_TOKEN = config.TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID
+JUPITER_ONLY = config.JUPITER_ONLY
+MIN_BUY_USD = config.MIN_BUY_USD
+MAX_PRICE_DRIFT_PCT = config.MAX_PRICE_DRIFT_PCT
+DATABASE_PATH = config.DATABASE_PATH
