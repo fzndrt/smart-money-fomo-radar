@@ -685,41 +685,6 @@ def run_websocket_loop():
     streamer = PumpPortalStreamer(on_token_trade_callback=on_token_event)
     loop.run_until_complete(streamer.start())
 
-# === JALUR EKSPRES ZERO BLIND TIME UNTUK INSIDER & TOP 100 WHALE ===
-    trader_pk = data.get("traderPublicKey", "")
-    is_insider_or_whale = (
-        trader_pk in INSIDER_WALLETS or 
-        trader_pk in TOP_100_WALLETS or 
-        "zypher" in str(trader_pk).lower()
-    )
-
-    # Jika transaksi berasal dari Insider atau Smart Money, langsung bypass batas umur!
-    if is_insider_or_whale and is_buy:
-        trade_evt = TradeEvent(
-            wallet=trader_pk,
-            token_mint=mint,
-            token_symbol=symbol,
-            amount_usd=usd_val,
-            token_amount=float(data.get("tokenAmount", 0.0) or 0.0),
-            entry_price_usd=mc / 1_000_000_000.0 if mc > 0 else 0.0001,
-            current_price_usd=mc / 1_000_000_000.0 if mc > 0 else 0.0001,
-            market_cap_usd=mc,
-            price_drift_pct=0.0,
-            signature=data.get("signature", f"ws-{int(time.time()*1000)}"),
-            is_buy=True
-        )
-        # Evaluasi langsung via SmartMoneyEngine
-        eligible, reason, payload = smart_money_engine.evaluate_trade(trade_evt)
-        if eligible and payload and TELEGRAM_BOT_TOKEN:
-            smart_money_engine.send_telegram_alert(payload)
-            state.mark_alerted(mint)
-            return
-
-    # Filter umur hanya berlaku untuk koin umum (bukan insider)
-    age_mins = (current_time - tok["first_seen"]) / 60.0
-    if not is_insider_or_whale and age_mins < 5.0:
-        return
-
 # =====================================================================
 # MESIN 2: CONVICTION SCANNER NON-BLOCKING (ZERO BLIND TIME ASYNC)
 # =====================================================================
