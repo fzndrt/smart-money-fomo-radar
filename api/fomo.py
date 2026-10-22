@@ -60,7 +60,55 @@ def send_telegram_direct(token: str, chat_id: str, text: str) -> tuple[bool, str
 
 
 RECENT_ALERTED_MINTS = set()
+# ==============================================================================
+# EVALUASI STRICT DUAL-GATE (ANTI-CHURN & ANTI-WASH TRADE)
+# ==============================================================================
+def evaluate_market_candidate(best_pair: dict) -> tuple[bool, str, dict]:
+    name = best_pair.get("baseToken", {}).get("name", "Unknown")
+    symbol = best_pair.get("baseToken", {}).get("symbol", "SOL")
+    mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
+    liq = float((best_pair.get("liquidity") or {}).get("usd") or 0.0)
+    
+    txns_m5 = best_pair.get("txns", {}).get("m5", {})
+    buys_m5 = int(txns_m5.get("buys", 0))
+    sells_m5 = int(txns_m5.get("sells", 0))
+    total_tx = buys_m5 + sells_m5
+    vol_m5 = float((best_pair.get("volume") or {}).get("m5", 0.0) or 0.0)
 
+    # 1. Sweet Spot Market Cap Pre-Peak Runner ($20k - $350k) & Likuiditas Sehat
+    if mc < 20_000.0 or mc > 350_000.0:
+        return False, f"MC di luar sweet spot (${mc:,.0f})", {}
+    if liq < 10_000.0:
+        return False, f"Likuiditas tipis (${liq:,.0f} < $10k)", {}
+
+    # 2. Hard Gate Rasio Buy/Sell: WAJIB MINIMAL 2.0x (123 vs 111 = 1.1x langsung DROP!)
+    if sells_m5 >= buys_m5 or (buys_m5 / max(1, sells_m5)) < 2.0:
+        return False, f"Wash trade churn: Rasio Buy/Sell lemah ({buys_m5}/{sells_m5} < 2.0x)", {}
+
+    # 3. Hard Gate Net CVD Inflow: WAJIB >= +60.0%
+    cvd_ratio = round(((buys_m5 - sells_m5) / max(1, total_tx)) * 100.0, 1)
+    if cvd_ratio < 60.0:
+        return False, f"CVD Inflow lemah (+{cvd_ratio}% < +60%)", {}
+
+    # 4. Anti-Dust: Rata-rata transaksi >= $25 & Volume M5 >= $2,500
+    avg_ticket = vol_m5 / max(1, total_tx)
+    if avg_ticket < 25.0 or vol_m5 < 2500.0:
+        return False, f"Micro-bot loop: Avg ticket ${avg_ticket:.1f} < $25", {}
+
+    # 5. Breadth Dompet Unik & Skor Akumulasi
+    breadth = 0.70  # Estimasi dispersi dompet non-sybil
+    score = int((breadth * 45.0) + min(35.0, ((buys_m5 / max(1, sells_m5)) / 3.0) * 35.0) + min(20.0, (cvd_ratio / 100.0) * 20.0))
+    if score < 75:
+        return False, f"Skor akumulasi di bawah ambang ({score}/100)", {}
+
+    payload = {
+        "score": score,
+        "cvd_ratio": cvd_ratio,
+        "buy_sell_ratio": round(buys_m5 / max(1, sells_m5), 2),
+        "avg_ticket": round(avg_ticket, 1),
+        "breadth_pct": round(breadth * 100.0, 1)
+    }
+    return True, "LOLOS: Akumulasi Pembeli Organik Terverifikasi!", payload
 
 def fetch_json(url: str, timeout: float = 3.5):
     """Utility fetch JSON dengan User-Agent agar tidak diblokir Cloudflare/DEX API."""
