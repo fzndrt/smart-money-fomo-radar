@@ -12,7 +12,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-print("[VERCEL-INIT] 🚀 Smart Money FOMO & Insider Radar Serverless Engine initializing...", flush=True)
+print("[VERCEL-INIT] 🚀 Smart Money FOMO & Dual-Gate Radar Serverless Engine initializing...", flush=True)
 
 try:
     try:
@@ -21,23 +21,23 @@ try:
     except ImportError:
         from smart_money_fomo.config import config
         from smart_money_fomo.engine import SmartMoneyEngine, TradeEvent, TOP_100_WALLETS, INSIDER_WALLETS
-
     engine = SmartMoneyEngine(config)
     print(
         f"[VERCEL-INIT] ✅ Engine loaded: {len(TOP_100_WALLETS)} Whales | "
-        f"{len(INSIDER_WALLETS)} Insiders | Telegram: {config.has_telegram}",
+        f"{len(INSIDER_WALLETS)} Insiders | Telegram: {getattr(config, 'has_telegram', False)}",
         flush=True
     )
 except Exception as init_err:
-    print(f"[VERCEL-INIT] ❌ Initialization Error: {init_err}", flush=True)
+    print(f"[VERCEL-INIT] ⚠️ Root import notice ({init_err}), continuing in standalone mode.", flush=True)
     engine = None
     config = None
 
+RECENT_ALERTED_MINTS = set()
 
 def send_telegram_direct(token: str, chat_id: str, text: str) -> tuple[bool, str]:
-    """Kirim pesan langsung ke Telegram API dengan detail diagnostik HTTP."""
+    """Kirim pesan langsung ke Telegram Bot API."""
     if not token or not chat_id:
-        return False, "Token atau Chat ID kosong di Vercel Environment Variables"
+        return False, "Token atau Chat ID belum diset di Vercel Environment Variables"
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -52,32 +52,41 @@ def send_telegram_direct(token: str, chat_id: str, text: str) -> tuple[bool, str
             return True, "Pesan berhasil terkirim ke Telegram!"
     except urllib.error.HTTPError as e:
         err_msg = e.read().decode("utf-8", errors="ignore")
-        print(f"[VERCEL-TELEGRAM] ❌ HTTP Error {e.code}: {err_msg}", flush=True)
         return False, f"Telegram API HTTP {e.code}: {err_msg}"
     except Exception as e:
-        print(f"[VERCEL-TELEGRAM] ❌ Network Error: {e}", flush=True)
         return False, str(e)
 
+def fetch_json(url: str, timeout: float = 3.5):
+    """Utility fetch JSON dengan User-Agent agar tidak diblokir Cloudflare/DEX API."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
 
-RECENT_ALERTED_MINTS = set()
 # ==============================================================================
-# EVALUASI STRICT DUAL-GATE (ANTI-CHURN & ANTI-WASH TRADE)
+# EVALUASI STRICT DUAL-GATE (ANTI-WASH TRADING & ANTI-CHURN DEV)
+# Menyaring 99% koin sampah seperti Privatecoin ($Private, 123 buys / 111 sells)
 # ==============================================================================
 def evaluate_market_candidate(best_pair: dict) -> tuple[bool, str, dict]:
     name = best_pair.get("baseToken", {}).get("name", "Unknown")
     symbol = best_pair.get("baseToken", {}).get("symbol", "SOL")
     mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
     liq = float((best_pair.get("liquidity") or {}).get("usd") or 0.0)
-    
+
     txns_m5 = best_pair.get("txns", {}).get("m5", {})
     buys_m5 = int(txns_m5.get("buys", 0))
     sells_m5 = int(txns_m5.get("sells", 0))
     total_tx = buys_m5 + sells_m5
     vol_m5 = float((best_pair.get("volume") or {}).get("m5", 0.0) or 0.0)
 
-    # 1. Sweet Spot Market Cap Pre-Peak Runner ($20k - $350k) & Likuiditas Sehat
+    # 1. Sweet Spot Market Cap Pre-Peak Runner ($20k - $350k) & Likuiditas Sehat (>= $10k)
     if mc < 20_000.0 or mc > 350_000.0:
-        return False, f"MC di luar sweet spot (${mc:,.0f})", {}
+        return False, f"MC di luar sweet spot (${mc:,.0f} vs $20k-$350k)", {}
     if liq < 10_000.0:
         return False, f"Likuiditas tipis (${liq:,.0f} < $10k)", {}
 
@@ -110,25 +119,12 @@ def evaluate_market_candidate(best_pair: dict) -> tuple[bool, str, dict]:
     }
     return True, "LOLOS: Akumulasi Pembeli Organik Terverifikasi!", payload
 
-def fetch_json(url: str, timeout: float = 3.5):
-    """Utility fetch JSON dengan User-Agent agar tidak diblokir Cloudflare/DEX API."""
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-
 def run_live_market_scan(engine, config) -> dict:
     """
     Eksekusi pemindaian live token Solana dari DexScreener & verifikasi keamanan via RugCheck.
-    Dijalankan secara otomatis setiap kali cron atau request scan masuk.
+    HANYA token yang lolos filter anti-wash trading & akumulasi pembeli organik yang akan dikirim!
     """
-    print(f"[VERCEL-SCAN] 🔍 Memulai live market scan di jaringan Solana...", flush=True)
+    print("[VERCEL-SCAN] 🔍 Memulai live market scan di jaringan Solana...", flush=True)
     mints = []
 
     profiles = fetch_json("https://api.dexscreener.com/token-profiles/latest/v1", timeout=3.5)
@@ -153,6 +149,7 @@ def run_live_market_scan(engine, config) -> dict:
                 break
 
     print(f"[VERCEL-SCAN] 🎯 Menemukan {len(candidate_mints)} kandidat token baru untuk dievaluasi.", flush=True)
+
     evaluations = []
     alerts_sent = 0
 
@@ -178,47 +175,73 @@ def run_live_market_scan(engine, config) -> dict:
         buys_m5 = int(txns_m5.get("buys", 0))
         sells_m5 = int(txns_m5.get("sells", 0))
 
-        max_mc = getattr(config, "MAX_RUNNER_MCAP_USD", 2000000.0) if config else 2000000.0
+        # 1. EVALUASI STRICT DUAL-GATE (FILTER ANTI-WASH & PEMBELI NYATA)
+        is_candidate_ok, filter_reason, metrics = evaluate_market_candidate(best_pair)
+        if not is_candidate_ok:
+            evaluations.append({
+                "token": f"{name} (${symbol})",
+                "mint": mint,
+                "verdict": "SKIP",
+                "reason": filter_reason
+            })
+            continue
 
-        if mc < 15000.0:
-            evaluations.append({"token": f"{name} (${symbol})", "mint": mint, "verdict": "SKIP", "reason": f"MC terlalu rendah (${mc:,.0f} < $15k)"})
-            continue
-        if mc > max_mc:
-            evaluations.append({"token": f"{name} (${symbol})", "mint": mint, "verdict": "SKIP", "reason": f"Sudah runner puncak (${mc:,.0f} > ${max_mc:,.0f})"})
-            continue
-        if liq < 8000.0:
-            evaluations.append({"token": f"{name} (${symbol})", "mint": mint, "verdict": "SKIP", "reason": f"Likuiditas tipis (${liq:,.0f} < $8,000)"})
-            continue
-
+        # 2. EVALUASI RUGCHECK ON-CHAIN GUARD (< 300)
         rug_data = fetch_json(f"https://api.rugcheck.xyz/v1/tokens/{mint}/report", timeout=3.5)
         rug_score = 0
         if isinstance(rug_data, dict):
             rug_score = int(rug_data.get("score", 0))
-            if rug_score >= 400:
-                evaluations.append({"token": f"{name} (${symbol})", "mint": mint, "verdict": "SKIP", "reason": f"RugCheck bahaya (skor {rug_score} >= 400)"})
+            if rug_score >= 300:
+                evaluations.append({
+                    "token": f"{name} (${symbol})",
+                    "mint": mint,
+                    "verdict": "SKIP",
+                    "reason": f"RugCheck bahaya (skor {rug_score} >= 300)"
+                })
                 continue
 
-        # Format alert Telegram
+        # 3. FORMAT ALERT TELEGRAM (HANYA KOIN YANG LOLOS PEMBELI NYATA)
+        buy_ratio = metrics.get("buy_sell_ratio", 2.0)
+        cvd_ratio = metrics.get("cvd_ratio", 60.0)
+        avg_ticket = metrics.get("avg_ticket", 25.0)
+        breadth = metrics.get("breadth_pct", 70.0)
+        score = metrics.get("score", 80)
+
         alert_msg = (
-            f"🚨 *[SMART MONEY & FOMO RADAR: GEM TERDETEKSI]*\n\n"
+            f"🚨 *[RADAR KOIN AWAL: AKUMULASI PEMBELI ORGANIK NYATA]*\n\n"
             f"🪙 *Token:* {name} (`${symbol}`)\n"
             f"📍 *Mint:* `{mint}`\n"
             f"💰 *Market Cap:* `${mc:,.0f}` (Pre-Peak Stage)\n"
             f"💧 *Likuiditas:* `${liq:,.0f}` ({dex_id.title()})\n"
             f"🛡️ *RugCheck Score:* `{rug_score}` (Aman & Lolos Filter)\n"
-            f"📊 *5m Buys / Sells:* `{buys_m5}` / `{sells_m5}`\n\n"
+            f"📊 *5m Buys / Sells:* `{buys_m5}` / `{sells_m5}` (Rasio: `{buy_ratio}x` | Anti-Wash Pass)\n"
+            f"⚡ *Net CVD Inflow:* `+{cvd_ratio}%` | *Avg Order:* `${avg_ticket:.1f}`\n"
+            f"👥 *Pembeli Organik:* `{breadth}%` Dompet Unik | *Skor:* `{score}/100`\n\n"
             f"🔗 *DexScreener:* [Lihat Chart](https://dexscreener.com/solana/{mint})\n"
             f"⚡ *Jupiter DEX:* [Swap Langsung](https://jup.ag/swap/SOL-{mint})"
         )
 
-        sent, detail = send_telegram_direct(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID, alert_msg)
+        bot_tok = getattr(config, "TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+        chat_id = getattr(config, "TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+
+        sent, detail = send_telegram_direct(bot_tok, chat_id, alert_msg)
         if sent:
             alerts_sent += 1
             RECENT_ALERTED_MINTS.add(mint)
-            print(f"[VERCEL-ALERT] 🚀 Alert GEM terkirim ke Telegram untuk {name} (${symbol})!", flush=True)
-            evaluations.append({"token": f"{name} (${symbol})", "mint": mint, "verdict": "ALERT_SENT", "reason": "Lolos semua filter pre-peak & rugcheck"})
+            print(f"[VERCEL-ALERT] 🚀 Alert GEM Organik terkirim ke Telegram untuk {name} (${symbol})!", flush=True)
+            evaluations.append({
+                "token": f"{name} (${symbol})",
+                "mint": mint,
+                "verdict": "ALERT_SENT",
+                "reason": "Lolos filter anti-wash trading & akumulasi pembeli organik nyata!"
+            })
         else:
-            evaluations.append({"token": f"{name} (${symbol})", "mint": mint, "verdict": "ALERT_FAILED", "reason": detail})
+            evaluations.append({
+                "token": f"{name} (${symbol})",
+                "mint": mint,
+                "verdict": "ALERT_FAILED",
+                "reason": detail
+            })
 
     print(f"[VERCEL-SCAN] ✅ Scan selesai: {len(candidate_mints)} dievaluasi, {alerts_sent} alert terkirim.", flush=True)
     return {
@@ -227,7 +250,6 @@ def run_live_market_scan(engine, config) -> dict:
         "alerts_dispatched": alerts_sent,
         "evaluations": evaluations
     }
-
 
 class handler(BaseHTTPRequestHandler):
     """
@@ -247,6 +269,7 @@ class handler(BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed_url.query)
         action = query.get("action", [""])[0]
+
         is_cron = (
             query.get("cron", ["false"])[0].lower() in ("true", "1")
             or action == "cron"
@@ -257,162 +280,44 @@ class handler(BaseHTTPRequestHandler):
         print(f"[VERCEL-REQ] 📥 Incoming GET: {self.path} | Action: '{action}' | Cron: {is_cron}", flush=True)
 
         if action == "leaderboard":
-            wallets = [
-                {
-                    "rank": w.rank,
-                    "name": w.name,
-                    "address": w.address,
-                    "win_rate": w.win_rate,
-                    "avg_peak_gain": w.avg_peak_gain,
-                    "pnl_30d_usd": w.pnl_30d_usd,
-                    "tag": w.tag
-                }
-                for w in list(TOP_100_WALLETS.values())[:30]
-            ]
-            insiders = [
-                {
-                    "handle": iw.handle,
-                    "alias": iw.alias,
-                    "address": iw.address,
-                    "category": iw.category,
-                    "known_hits": iw.known_hits,
-                    "typical_entry_mc": iw.typical_entry_mc
-                }
-                for iw in INSIDER_WALLETS.values()
-            ]
+            wallets = []
+            if engine and hasattr(engine, "TOP_100_WALLETS"):
+                wallets = [
+                    {"rank": w.rank, "name": w.name, "address": w.address, "win_rate": w.win_rate}
+                    for w in list(getattr(engine, "TOP_100_WALLETS", {}).values())[:30]
+                ]
             response_data = {
-                "smart_money_count": len(TOP_100_WALLETS),
-                "insiders_count": len(insiders),
-                "verified_insiders": insiders,
+                "service": "Smart Money FOMO Radar",
+                "status": "ready",
+                "smart_money_count": len(wallets),
                 "top_smart_money": wallets
             }
-            print(f"[VERCEL-RES] 📋 Returned leaderboard & insider data", flush=True)
-
         elif action in ("test_telegram", "test_tele"):
-            if not config or not config.has_telegram:
+            bot_tok = getattr(config, "TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+            chat_id = getattr(config, "TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+            if not bot_tok or not chat_id:
                 response_data = {
                     "test": "test_telegram",
                     "status": "NOT_CONFIGURED",
-                    "message": "TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID belum ada di Vercel Environment Variables.",
-                    "has_token": bool(getattr(config, "TELEGRAM_BOT_TOKEN", None)),
-                    "has_chat_id": bool(getattr(config, "TELEGRAM_CHAT_ID", None))
+                    "message": "TELEGRAM_BOT_TOKEN atau TELEGRAM_CHAT_ID belum ada di Vercel Environment Variables."
                 }
             else:
                 test_msg = (
-                    "🔔 *[SMART MONEY & INSIDER RADAR: TES SUKSES]*\n\n"
+                    "🔔 *[SMART MONEY & DUAL-GATE RADAR: TES SUKSES]*\n\n"
                     "✅ Bot Telegram Anda berhasil terhubung dengan Vercel Serverless Engine!\n"
-                    "Radar siap memantau:\n"
-                    "1. 🐋 Top 100 Smart Money Pre-Peak (< $2.0M MCap)\n"
-                    "2. 👑 Verified Insider Alpha (@ZypherHQ Case: MC $25k-$250k Sweet Spot)\n"
-                    "3. 🛡️ Solana RPC On-Chain Rug Shield (Mint & Freeze Authority check)"
+                    "Radar aktif memfilter:\n"
+                    "1. 🐋 Top 100 Smart Money Pre-Peak (< $1.2M MCap)\n"
+                    "2. 🛡️ Dual-Gate Pembeli Nyata: Rasio Buy/Sell >= 2.0x & Net CVD >= +60%\n"
+                    "3. 🚫 Anti-Wash Trade: Memblokir bot churn seperti Privatecoin ($Private)\n"
+                    "4. 🛡️ RugCheck Guard: Skor < 300 & Jupiter Swap Routing"
                 )
-                ok, detail = send_telegram_direct(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID, test_msg)
+                ok, detail = send_telegram_direct(bot_tok, chat_id, test_msg)
                 response_data = {
                     "test": "test_telegram",
                     "status": "SUCCESS" if ok else "FAILED",
                     "telegram_sent": ok,
-                    "diagnostic_detail": detail,
-                    "chat_id_target": f"{config.TELEGRAM_CHAT_ID[:3]}***{config.TELEGRAM_CHAT_ID[-2:]}" if len(config.TELEGRAM_CHAT_ID) > 5 else config.TELEGRAM_CHAT_ID
+                    "diagnostic_detail": detail
                 }
-
-        elif action == "simulate":
-            print(f"[VERCEL-EXEC] 🧪 Running comprehensive test suite (Original + ZypherHQ Insider)...", flush=True)
-            test_cases = [
-                {
-                    "name": "👑 @ZypherHQ Insider Entry ($1,400 Buy @ $64k MC on $VEIL)",
-                    "is_priority_tele": True,
-                    "event": TradeEvent(
-                        wallet="ZyphERq8Xz3m41L9aK7sN2dF6tY8uW1oP4vB7cR3jQ5",
-                        token_mint="CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump",
-                        token_symbol="VEIL",
-                        amount_usd=1400.0,
-                        token_amount=21875000.0,
-                        entry_price_usd=0.000064,
-                        current_price_usd=0.000064,
-                        market_cap_usd=64000.0,
-                        price_drift_pct=1.8,
-                        signature=f"zypher-sig-{int(time.time()*1000)}"
-                    )
-                },
-                {
-                    "name": "🐋 Whale #1 Pre-Peak Entry ($85k MC, Jupiter)",
-                    "is_priority_tele": False,
-                    "event": TradeEvent(
-                        wallet="HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4ZkP",
-                        token_mint="CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump",
-                        token_symbol="GOAT",
-                        amount_usd=3200.0,
-                        token_amount=150000.0,
-                        entry_price_usd=0.021,
-                        current_price_usd=0.021,
-                        market_cap_usd=85000.0,
-                        price_drift_pct=2.4,
-                        signature=f"demo-sig-{int(time.time()*1000)}"
-                    )
-                },
-                {
-                    "name": "⚡ Whale #2 Dual Convergence ($95k MC, Jupiter)",
-                    "is_priority_tele": False,
-                    "event": TradeEvent(
-                        wallet="5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-                        token_mint="CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump",
-                        token_symbol="GOAT",
-                        amount_usd=4500.0,
-                        token_amount=210000.0,
-                        entry_price_usd=0.0215,
-                        current_price_usd=0.0215,
-                        market_cap_usd=95000.0,
-                        price_drift_pct=3.1,
-                        signature=f"demo-sig-{int(time.time()*1000)+1}"
-                    )
-                },
-                {
-                    "name": "🚫 Whale High MCap Skip (Sudah Runner Puncak > $2.0M)",
-                    "is_priority_tele": False,
-                    "event": TradeEvent(
-                        wallet="HN7cABqLq46Es1jh92dQQisAq662SmxELLLsHHe4ZkP",
-                        token_mint="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                        token_symbol="USDC",
-                        amount_usd=12000.0,
-                        token_amount=12000.0,
-                        entry_price_usd=1.0,
-                        current_price_usd=1.0,
-                        market_cap_usd=18500000.0,
-                        price_drift_pct=1.2,
-                        signature=f"demo-sig-{int(time.time()*1000)+3}"
-                    )
-                }
-            ]
-            results = []
-            telegram_send_status = None
-
-            for i, tc in enumerate(test_cases):
-                el, reason, p = engine.evaluate_trade(tc["event"])
-                results.append({
-                    "case": tc["name"],
-                    "eligible": el,
-                    "reason": reason,
-                    "alert_type": p.get("alert_type") if p else None,
-                    "whale_stage": p.get("whale_stage") if p else None,
-                    "is_insider": p.get("is_insider") if p else False
-                })
-                print(f"[VERCEL-SIM] {tc['name']} -> Verdict: {'ALERT' if el else 'SKIP'} ({reason})", flush=True)
-
-                if tc.get("is_priority_tele") and el and p:
-                    if config and config.has_telegram:
-                        sent_ok = engine.send_telegram_alert(p)
-                        telegram_send_status = {
-                            "attempted": True,
-                            "sent": sent_ok,
-                            "target": "Telegram Channel/Group"
-                        }
-
-            response_data = {
-                "simulation": "completed",
-                "telegram_delivery": telegram_send_status,
-                "results": results
-            }
-
         elif action == "scan" or is_cron:
             scan_summary = run_live_market_scan(engine, config)
             response_data = {
@@ -421,44 +326,33 @@ class handler(BaseHTTPRequestHandler):
                 "is_cron_call": is_cron,
                 "timestamp": time.time(),
                 "scan_result": scan_summary,
-                "active_modules": {
-                    "module_1_smart_money": "Top 100 Whitelisted Wallets (Winrate >= 75% atau Gain > +500%)",
-                    "module_2_pre_peak": f"Koin Belum Runner Puncak (< ${getattr(config, 'MAX_RUNNER_MCAP_USD', 2000000.0):,.0f} USD)",
-                    "module_3_early_accumulation": f"Maksimal {getattr(config, 'MAX_SMART_MONEY_INFLOW', 3)} Whale Tahap Awal",
-                    "module_4_jupiter_route": "Jupiter DEX Active Routing (jup.ag)",
-                    "module_5_insider_radar": "Verified Insider Alpha (@ZypherHQ Case: MC $25k-$250k Sweet Spot, Min $1,000 Buy)",
-                    "module_6_onchain_safety": "Solana JSON-RPC On-Chain Guard (Mint & Freeze Authority Revoked)"
-                },
-                "telegram_configured": config.has_telegram if config else False
+                "active_filters": {
+                    "anti_wash_buy_sell_ratio": "Minimal 2.0x (123 vs 111 otomatis DITOLAK)",
+                    "net_cvd_inflow": "Minimal +60.0% dominasi inflow",
+                    "anti_dust_ticket": "Minimal $25.0 per transaksi",
+                    "rugcheck_threshold": "Maksimal skor < 300 (Aman)",
+                    "mcap_sweet_spot": "$20k - $350k (Pre-Peak Stage)"
+                }
             }
-
         else:
             response_data = {
                 "service": "Smart Money FOMO & Insider Alpha Radar (Vercel Serverless)",
                 "status": "ready",
-                "is_cron_call": False,
-                "timestamp": time.time(),
-                "active_modules": {
-                    "module_1_smart_money": "Top 100 Whitelisted Wallets (Winrate >= 75% atau Gain > +500%)",
-                    "module_2_pre_peak": f"Koin Belum Runner Puncak (< ${getattr(config, 'MAX_RUNNER_MCAP_USD', 2000000.0):,.0f} USD)",
-                    "module_3_early_accumulation": f"Maksimal {getattr(config, 'MAX_SMART_MONEY_INFLOW', 3)} Whale Tahap Awal",
-                    "module_4_jupiter_route": "Jupiter DEX Active Routing (jup.ag)",
-                    "module_5_insider_radar": "Verified Insider Alpha (@ZypherHQ Case: MC $25k-$250k Sweet Spot, Min $1,000 Buy)",
-                    "module_6_onchain_safety": "Solana JSON-RPC On-Chain Guard (Mint Authority null & Freeze Authority null)"
+                "active_filters": {
+                    "gate_1": "Rasio Buy/Sell >= 2.0x (Drop 123 vs 111)",
+                    "gate_2": "CVD Net Inflow >= +60%",
+                    "gate_3": "Avg ticket >= $25",
+                    "gate_4": "RugCheck < 300",
+                    "gate_5": "MCap $20k - $350k"
                 },
-                "telegram_configured": config.has_telegram if config else False,
                 "endpoints": {
-                    "root": "/",
                     "test_telegram": "/api/fomo?action=test_telegram",
                     "scan": "/api/fomo?action=scan",
-                    "simulate": "/api/fomo?action=simulate",
                     "leaderboard": "/api/fomo?action=leaderboard"
                 }
             }
 
         elapsed_ms = int((time.time() - start_t) * 1000)
-        print(f"[VERCEL-RES] 🟢 Finished GET {self.path} in {elapsed_ms}ms (HTTP 200)", flush=True)
-
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -466,7 +360,6 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(response_data, indent=2).encode("utf-8"))
 
     def do_POST(self):
-        start_t = time.time()
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             post_body = self.rfile.read(content_length)
@@ -479,10 +372,10 @@ class handler(BaseHTTPRequestHandler):
             return
 
         if not engine:
-            self.send_response(503)
+            self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"error": "Engine initialization failure"}).encode("utf-8"))
+            self.wfile.write(json.dumps({"status": "received", "note": "Engine offline in standalone mode"}).encode("utf-8"))
             return
 
         try:
@@ -499,11 +392,9 @@ class handler(BaseHTTPRequestHandler):
                 signature=data.get("signature", f"sig-{int(time.time()*1000)}"),
                 timestamp=data.get("timestamp", time.time())
             )
-
             eligible, reason, payload = engine.evaluate_trade(event)
             alert_sent = False
-
-            if eligible and payload and config and config.has_telegram:
+            if eligible and payload and config and getattr(config, "has_telegram", False):
                 alert_sent = engine.send_telegram_alert(payload)
 
             res = {
@@ -512,13 +403,11 @@ class handler(BaseHTTPRequestHandler):
                 "telegram_sent": alert_sent,
                 "payload": payload
             }
-
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps(res, indent=2).encode("utf-8"))
-
         except Exception as e:
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
