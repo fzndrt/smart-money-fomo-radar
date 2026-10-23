@@ -90,11 +90,18 @@ def analyze_holders_and_cabal(rug_data: dict, pair_address: str = "") -> tuple[b
     2. Mendeteksi Cabal Wallet (Developer memecah suplai ke dompet-dompet kluster identik).
     """
     if not isinstance(rug_data, dict):
-        return True, "Data holder RugCheck tidak tersedia", {"pure_top10": 0.0, "max_single": 0.0, "pool_pct": 0.0, "cabal": False}
+        return False, "Audit RugCheck belum siap/timeout (Fail-Closed Guard)", {"pure_top10": 0.0, "max_single": 0.0, "pool_pct": 0.0, "cabal": False}
 
     holders = rug_data.get("topHolders") or rug_data.get("holders") or []
     if not holders:
-        return True, "List holder kosong", {"pure_top10": 0.0, "max_single": 0.0, "pool_pct": 0.0, "cabal": False}
+        return False, "List holder RugCheck kosong (Audit belum selesai)", {"pure_top10": 0.0, "max_single": 0.0, "pool_pct": 0.0, "cabal": False}
+
+    # Ekstraksi otomatis vault likuiditas dari semua DEX markets (Raydium, PumpSwap, Meteora, Orca)
+    market_vaults = set()
+    for m in rug_data.get("markets", []) or []:
+        if m.get("liquidityA"): market_vaults.add(str(m["liquidityA"]).lower())
+        if m.get("liquidityB"): market_vaults.add(str(m["liquidityB"]).lower())
+        if m.get("pubkey"): market_vaults.add(str(m["pubkey"]).lower())
 
     norm_pair = (pair_address or "").lower()
     pool_holdings = []
@@ -103,9 +110,10 @@ def analyze_holders_and_cabal(rug_data: dict, pair_address: str = "") -> tuple[b
     for h in holders:
         addr = str(h.get("address") or "").lower()
         pct = float(h.get("pct") or 0.0)
-        # Pisahkan kolam pool DEX / Raydium / Burn dari pure holder
+        # Pisahkan kolam pool DEX / Raydium / PumpSwap / Burn dari pure holder
         is_pool = (
             addr == norm_pair
+            or addr in market_vaults
             or addr in KNOWN_POOL_IDENTIFIERS
             or "burn" in addr
             or "dead" in addr
@@ -180,11 +188,11 @@ def evaluate_market_candidate(best_pair: dict) -> tuple[bool, str, dict]:
     mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
     liq = float((best_pair.get("liquidity") or {}).get("usd") or 0.0)
 
-    # 1. Early-Stage Market Cap ($15k - $350k) & Likuiditas Sehat (>= $7.5k)
+    # 1. Early-Stage Market Cap ($15k - $350k) & Likuiditas Sehat (>= $10k)
     if mc < 15_000.0 or mc > 350_000.0:
         return False, f"MC di luar sweet spot (USD {mc:,.0f} vs $15k-$350k)", {}
-    if liq < 7_500.0:
-        return False, f"Likuiditas tipis (USD {liq:,.0f} < $7.5k)", {}
+    if liq < 10_000.0:
+        return False, f"Likuiditas tipis (USD {liq:,.0f} < $10k)", {}
 
     # 2. Rasio Kedalaman Likuiditas terhadap Market Cap (Wajib >= 12%)
     liq_mc_ratio = (liq / max(1.0, mc)) * 100.0
@@ -192,7 +200,6 @@ def evaluate_market_candidate(best_pair: dict) -> tuple[bool, str, dict]:
         return False, f"Trap Likuiditas Tipis: Rasio Liq/MC rapuh ({liq_mc_ratio:.1f}% < 12%)", {}
 
     # 3. Early Entry Pair Age Guard (Wajib >= 3.0 menit s/d 18 jam)
-    # Lolos dari kekacauan block-0 Jito bundle sniper, tapi cukup awal sebelum koin melambung tinggi
     pair_created_at_ms = best_pair.get("pairCreatedAt")
     now_ms = time.time() * 1000.0
     if pair_created_at_ms:
@@ -205,7 +212,6 @@ def evaluate_market_candidate(best_pair: dict) -> tuple[bool, str, dict]:
         age_minutes = 10.0
 
     # 4. Anti-Parabolic God Candle (Kenaikan 5m Maksimal +85%)
-    # Koin yang naik > +85% dalam 5 menit sedang di fase klimaks/overextended (pucuk jarum)
     price_change_m5 = float((best_pair.get("priceChange") or {}).get("m5", 0.0) or 0.0)
     if price_change_m5 > 85.0:
         return False, f"PUCUK GOD CANDLE: Kenaikan 5m overextended (+{price_change_m5:.1f}% > +85%). Risiko dump seketika!", {}
@@ -233,7 +239,7 @@ def evaluate_market_candidate(best_pair: dict) -> tuple[bool, str, dict]:
         return False, f"Micro-bot loop: Avg ticket (USD {avg_ticket:.1f}) < $20", {}
 
     # 8. Skor Akumulasi Pembeli Organik Sehat
-    breadth = 0.78  # Estimasi dispersi dompet non-sybil
+    breadth = 0.78
     score = int((breadth * 40.0) + min(30.0, ((buys_m5 / max(1, sells_m5)) / 3.0) * 30.0) + min(20.0, (cvd_ratio / 100.0) * 20.0) + min(10.0, (liq_mc_ratio / 25.0) * 10.0))
     if score < 75:
         return False, f"Skor akumulasi di bawah ambang ({score}/100)", {}
@@ -318,40 +324,50 @@ def run_live_market_scan(engine, config) -> dict:
             })
             continue
 
-        # 2. EVALUASI RUGCHECK ON-CHAIN GUARD (< 300)
-        rug_data = fetch_json(f"https://api.rugcheck.xyz/v1/tokens/{mint}/report", timeout=3.5)
-        rug_score = 0
-        if isinstance(rug_data, dict):
-            rug_score = int(rug_data.get("score", 0))
-            if rug_score >= 300:
-                evaluations.append({
-                    "token": f"{name} ({symbol})",
-                    "mint": mint,
-                    "verdict": "SKIP",
-                    "reason": f"RugCheck bahaya (skor {rug_score} >= 300)"
-                })
-                continue
+        # 2. EVALUASI RUGCHECK ON-CHAIN GUARD (< 300 & FAIL-CLOSED)
+        rug_data = fetch_json(f"https://api.rugcheck.xyz/v1/tokens/{mint}/report", timeout=4.0)
+        if not isinstance(rug_data, dict):
+            evaluations.append({
+                "token": f"{name} ({symbol})",
+                "mint": mint,
+                "verdict": "SKIP",
+                "reason": "Audit RugCheck timeout / belum terindeks (Fail-Closed: Lindungi modal)"
+            })
+            continue
 
-            risks = rug_data.get("risks", []) or []
-            fatal_risk = None
-            for r in risks:
-                r_name = str(r.get("name", "")).lower()
-                r_level = str(r.get("level", "")).lower()
-                if "creator" in r_name and ("danger" in r_level or "high" in r_level):
-                    fatal_risk = "Creator/Dev masih menguasai suplai besar"
-                    break
-                if any(k in r_name for k in ("cabal", "cluster", "sybil", "bundled")) and ("danger" in r_level or "high" in r_level):
-                    fatal_risk = "RugCheck mendeteksi Cabal/Sybil cluster wallets"
-                    break
+        rug_score = int(rug_data.get("score", 0))
+        if rug_score >= 300:
+            evaluations.append({
+                "token": f"{name} ({symbol})",
+                "mint": mint,
+                "verdict": "SKIP",
+                "reason": f"RugCheck bahaya (skor {rug_score} >= 300)"
+            })
+            continue
 
-            if fatal_risk:
-                evaluations.append({
-                    "token": f"{name} ({symbol})",
-                    "mint": mint,
-                    "verdict": "SKIP",
-                    "reason": f"Anti-Dump Guard: {fatal_risk}"
-                })
-                continue
+        risks = rug_data.get("risks", []) or []
+        fatal_risk = None
+        for r in risks:
+            r_name = str(r.get("name", "")).lower()
+            r_level = str(r.get("level", "")).lower()
+            if "low liquidity" in r_name and ("danger" in r_level or "high" in r_level):
+                fatal_risk = "Likuiditas kolam sangat tipis (Low Liquidity Trap)"
+                break
+            if "creator" in r_name and ("danger" in r_level or "high" in r_level):
+                fatal_risk = "Creator/Dev masih menguasai suplai besar"
+                break
+            if any(k in r_name for k in ("cabal", "cluster", "sybil", "bundled", "dump", "freeze", "mint")) and ("danger" in r_level or "high" in r_level):
+                fatal_risk = f"Risiko fatal RugCheck: {r.get('name')}"
+                break
+
+        if fatal_risk:
+            evaluations.append({
+                "token": f"{name} ({symbol})",
+                "mint": mint,
+                "verdict": "SKIP",
+                "reason": f"Anti-Dump Guard: {fatal_risk}"
+            })
+            continue
 
         # 3. ANALISIS ON-CHAIN: MEMBEDAKAN KOLAM POOL VS PURE HOLDER & DETEKSI CABAL WALLET DEV
         holders_ok, holders_reason, holder_meta = analyze_holders_and_cabal(rug_data, pair_address)
@@ -364,7 +380,28 @@ def run_live_market_scan(engine, config) -> dict:
             })
             continue
 
-        # 4. FORMAT ALERT TELEGRAM (Lengkap dengan Analisis Pool & Cabal Guard)
+        # 4. CEK RUTE SWAP JUPITER DEX (jup.ag) — Mencegah token unswappable / pumpswap trap
+        jup_quote = fetch_json(f"https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint={mint}&amount=10000000&slippageBps=200", timeout=3.5)
+        if isinstance(jup_quote, dict):
+            route_plan = jup_quote.get("routePlan", [])
+            if not route_plan or len(route_plan) == 0:
+                evaluations.append({
+                    "token": f"{name} ({symbol})",
+                    "mint": mint,
+                    "verdict": "SKIP",
+                    "reason": "Belum ada rute swap likuid di Jupiter DEX (jup.ag)"
+                })
+                continue
+        elif dex_id.lower() in ("pumpswap", "pumpfun"):
+            evaluations.append({
+                "token": f"{name} ({symbol})",
+                "mint": mint,
+                "verdict": "SKIP",
+                "reason": "Token pumpswap belum memiliki rute swap Jupiter terverifikasi"
+            })
+            continue
+
+        # 5. FORMAT ALERT TELEGRAM (Lengkap dengan Analisis Pool & Cabal Guard)
         buy_ratio = metrics.get("buy_sell_ratio", 2.0)
         cvd_ratio = metrics.get("cvd_ratio", 60.0)
         avg_ticket = metrics.get("avg_ticket", 25.0)
@@ -478,7 +515,7 @@ class handler(BaseHTTPRequestHandler):
                     "🔔 *[SMART MONEY & DUAL-GATE RADAR: TES SUKSES]*\n\n"
                     "✅ Bot Telegram Anda berhasil terhubung dengan Vercel Serverless Engine!\n"
                     "Radar aktif memfilter:\n"
-                    "1. 🐋 Top 100 Smart Money Pre-Peak (< $1.2M MCap)\n"
+                    "1. 🐋 Top 100 Smart Money Pre-Peak (< $2.0M MCap)\n"
                     "2. 🛡️ Dual-Gate Pembeli Nyata: Rasio Buy/Sell >= 1.9x & Net CVD >= +55%\n"
                     "3. 🌊 Pool Separator: Membedakan LP Pool AMM/Raydium dari Pure Holders\n"
                     "4. 🕵️ Cabal Detection: Memblokir sybil cluster wallet developer\n"
@@ -506,7 +543,8 @@ class handler(BaseHTTPRequestHandler):
                     "cabal_detection": "Aktif (Mendeteksi dev sybil splitting mid-holders)",
                     "anti_top_price_velocity": "Maksimal +85.0% candle 5m",
                     "net_cvd_inflow": "Minimal +55.0% dominasi inflow",
-                    "anti_wash_buy_sell_ratio": "Minimal 1.9x"
+                    "anti_wash_buy_sell_ratio": "Minimal 1.9x",
+                    "jupiter_route_required": "Wajib lolos rute swap aktif di Jupiter DEX (jup.ag)"
                 }
             }
         else:
@@ -519,7 +557,8 @@ class handler(BaseHTTPRequestHandler):
                     "gate_3": "Pemisahan Kolam LP vs Pure Holder (Top 10 Pure <= 20%)",
                     "gate_4": "Anti-Cabal Wallet Cluster Dev",
                     "gate_5": "Anti-Pucuk (5m Price Change <= +85%)",
-                    "gate_6": "Buy/Sell >= 1.9x & CVD >= +55%"
+                    "gate_6": "Buy/Sell >= 1.9x & CVD >= +55%",
+                    "gate_7": "Fail-Closed RugCheck & Jupiter Route Verification"
                 },
                 "endpoints": {
                     "test_telegram": "/api/fomo?action=test_telegram",
@@ -581,7 +620,6 @@ class handler(BaseHTTPRequestHandler):
             }
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps(res, indent=2).encode("utf-8"))
         except Exception as e:
