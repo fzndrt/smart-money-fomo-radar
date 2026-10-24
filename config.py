@@ -1,5 +1,5 @@
 """
-config.py - Konfigurasi Terpadu Smart Money FOMO & Insider Alpha Radar.
+config.py - Konfigurasi Terpadu Smart Money FOMO, Insider Alpha & Corridor Sniper V2.
 Kompatibel dengan Vercel Serverless Functions, Docker/VPS, dan Local Environment.
 """
 
@@ -16,50 +16,58 @@ except ImportError:
 @dataclass
 class FomoConfig:
     # =========================================================================
-    # 1. KREDENSIAL TELEGRAM (Wajib diisi di Vercel Environment Variables)
+    # 1. KREDENSIAL TELEGRAM & KEAMANAN CRON (Vercel Environment Variables)
     # =========================================================================
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    CRON_SECRET: str = os.getenv("CRON_SECRET", "").strip()
+    DEBUG: bool = os.getenv("DEBUG", "false").strip().lower() in ("true", "1", "yes")
 
     # =========================================================================
-    # 2. MODUL ASLI: TOP 100 SMART MONEY & JUPITER FILTER (TETAP 100% UTUH)
+    # 2. MODUL INTI: TOP 100 SMART MONEY & JUPITER V1 LITE ROUTING
     # =========================================================================
-    JUPITER_ONLY: bool = True                     # Token WAJIB memiliki rute swap di Jupiter (jup.ag)
-    MIN_BUY_USD: float = float(os.getenv("MIN_BUY_USD", "1000.0"))               # Min pembelian ($1,000 USD)
-    MAX_PRICE_DRIFT_PCT: float = float(os.getenv("MAX_PRICE_DRIFT_PCT", "25.0")) # Toleransi kenaikan harga maks +25%
-    CONVERGENCE_WINDOW_SEC: int = int(os.getenv("CONVERGENCE_WINDOW_SEC", "900"))# Jendela konvergensi 15 menit
+    JUPITER_ONLY: bool = True
+    MIN_BUY_USD: float = float(os.getenv("MIN_BUY_USD", "1000.0"))
+    MAX_PRICE_DRIFT_PCT: float = float(os.getenv("MAX_PRICE_DRIFT_PCT", "25.0"))
+    CONVERGENCE_WINDOW_SEC: int = int(os.getenv("CONVERGENCE_WINDOW_SEC", "900"))
 
-    # Ambang batas kualifikasi Smart Money Top 100
-    MIN_WIN_RATE_PCT: float = 75.0                # Win-Rate >= 75% ATAU
-    MIN_AVG_PEAK_GAIN_PCT: float = 500.0          # Rata-rata lonjakan puncak > +500%
+    MIN_WIN_RATE_PCT: float = 75.0
+    MIN_AVG_PEAK_GAIN_PCT: float = 500.0
 
-    # Aturan Koin Belum Runner Puncak & Akumulasi Awal
-    PRE_PEAK_ONLY: bool = True                    # Wajib koin belum runner puncak
-    MAX_RUNNER_MCAP_USD: float = float(os.getenv("MAX_RUNNER_MCAP_USD", "2000000.0")) # Maks $2.0M USD
-    MAX_SMART_MONEY_INFLOW: int = int(os.getenv("MAX_SMART_MONEY_INFLOW", "3"))        # Maksimal 1 - 3 whale tahap awal
-    ENABLE_REBUY_ALERTS: bool = False             # Lewati DCA/Rebuy (fokus first-time entry)
+    PRE_PEAK_ONLY: bool = True
+    MAX_RUNNER_MCAP_USD: float = float(os.getenv("MAX_RUNNER_MCAP_USD", "2000000.0"))
+    MAX_SMART_MONEY_INFLOW: int = int(os.getenv("MAX_SMART_MONEY_INFLOW", "3"))
+    ENABLE_REBUY_ALERTS: bool = False
 
     # =========================================================================
-    # 3. MODUL TAMBAHAN BARU: INSIDER & EARLY ALPHA RADAR (SEPERTI @ZypherHQ)
+    # 3. MODUL INSIDER & EARLY ALPHA RADAR (@ZypherHQ Profile)
     # =========================================================================
-    ENABLE_INSIDER_RADAR: bool = True                   # Mengaktifkan deteksi insider/KOL awal
-    MIN_INSIDER_BUY_USD: float = 500.0                  # Sweet spot beli $500 USD (~3 SOL)
-    MIN_INSIDER_MCAP_USD: float = 25000.0               # Minimal MC $25k (hindari bot spam)
-    MAX_INSIDER_MCAP_USD: float = 250000.0              # Maksimal MC $250k (Sweet spot $VEIL di $64k)
-    REQUIRE_INSIDER_NEW_WALLET: bool = True             # Wajib Fresh New Wallet
-    MAX_INSIDER_PREVIOUS_BUYS: int = 1                  # Maks 1 riwayat token sebelumnya
-    MAX_INSIDER_SUPPLY_PCT: float = 3.5                 # Maksimal 3.5% suplai (distribusi terpecah rapi, anti dev monopoli)
-    REQUIRE_INSIDER_ZERO_SELL: bool = True              # Wajib Zero Sell di fase awal akumulasi
+    ENABLE_INSIDER_RADAR: bool = True
+    MIN_INSIDER_BUY_USD: float = float(os.getenv("MIN_INSIDER_BUY_USD", "500.0"))
+    MIN_INSIDER_MCAP_USD: float = float(os.getenv("MIN_INSIDER_MCAP_USD", "25000.0"))
+    MAX_INSIDER_MCAP_USD: float = float(os.getenv("MAX_INSIDER_MCAP_USD", "250000.0"))
+    REQUIRE_INSIDER_NEW_WALLET: bool = True
+    MAX_INSIDER_PREVIOUS_BUYS: int = 1
+    MAX_INSIDER_SUPPLY_PCT: float = 3.5
+    REQUIRE_INSIDER_ZERO_SELL: bool = True
 
-    # On-Chain Safety Guard (Anti-Rug & Anti-Honeypot via Solana RPC)
-    ENFORCE_ONCHAIN_SAFETY: bool = True           # Cek mintAuthority == null & freezeAuthority == null
-    MIN_LIQUIDITY_USD: float = float(os.getenv("MIN_LIQUIDITY_USD", "8000.0"))        # Minimal likuiditas pool $8k USD
+    # =========================================================================
+    # 4. MODUL CORRIDOR SNIPER V2 (DELAY PROJECTION & ROUND-TRIP EXECUTION)
+    # =========================================================================
+    PIPELINE_REACTION_DELAY_SEC: float = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", "22.0"))
+    MAX_ROUNDTRIP_LOSS_PCT: float = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", "5.5"))
+    MIN_NET_PROFIT_AFTER_DELAY_PCT: float = float(os.getenv("MIN_NET_PROFIT_AFTER_DELAY_PCT", "18.0"))
+    BATCH_CANDIDATE_LIMIT: int = int(os.getenv("BATCH_CANDIDATE_LIMIT", "25"))
+    ALERT_COOLDOWN_SEC: int = int(os.getenv("ALERT_COOLDOWN_SEC", "2700"))  # 45 menit per lorong
+
+    # On-Chain Safety Guard via Solana RPC
+    ENFORCE_ONCHAIN_SAFETY: bool = True
+    MIN_LIQUIDITY_USD: float = float(os.getenv("MIN_LIQUIDITY_USD", "8000.0"))
     SOLANA_RPC_URL: str = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
     # =========================================================================
-    # 4. SISTEM & PERSISTENSI DATABASE
+    # 5. SISTEM & PERSISTENSI DATABASE
     # =========================================================================
-    # Mode Eksklusif Telegram: HANYA Sinyal Smart Money & Insider (Mute Koin Umum/Dump Trap)
     ONLY_SMART_MONEY_AND_INSIDER_ALERTS: bool = True
 
     DATABASE_PATH: str = os.getenv(
@@ -74,11 +82,13 @@ class FomoConfig:
 
 config = FomoConfig()
 
-# Expose atribut tingkat modul untuk kompatibilitas kebal galat
+# Expose atribut tingkat modul untuk kompatibilitas penuh lintas runner
 ONLY_SMART_MONEY_AND_INSIDER_ALERTS = config.ONLY_SMART_MONEY_AND_INSIDER_ALERTS
 CONVERGENCE_WINDOW_SEC = config.CONVERGENCE_WINDOW_SEC
 TELEGRAM_BOT_TOKEN = config.TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID
+CRON_SECRET = config.CRON_SECRET
+DEBUG = config.DEBUG
 JUPITER_ONLY = config.JUPITER_ONLY
 MIN_BUY_USD = config.MIN_BUY_USD
 MAX_PRICE_DRIFT_PCT = config.MAX_PRICE_DRIFT_PCT
