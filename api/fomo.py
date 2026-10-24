@@ -50,6 +50,8 @@ HARD_QUOTE_MINTS = {
     "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",  # USD1
 }
 TEST_BUY_LAMPORTS = 100_000_000          # Simulasi ukuran nyata 0.1 SOL (~$15) Beli -> Jual
+TEST_DEPTH_MULTIPLIER = 10               # Stress-test pencairan 1.0 SOL paralel (Anti Hollow-Bin DLMM)
+MAX_DEPTH_CLIFF_LOSS_PCT = 13.5          # Batas deviasi likuiditas keluar ukuran 1.0 SOL
 PIPELINE_REACTION_DELAY_SEC = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", getattr(config, "PIPELINE_REACTION_DELAY_SEC", 22.0)))
 PRIORITY_TIP_BUFFER_PCT = 1.0            # Buffer priority fee / Jito tip saat eksekusi nyata
 MAX_ROUNDTRIP_LOSS_PCT = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", getattr(config, "MAX_ROUNDTRIP_LOSS_PCT", 5.5)))
@@ -188,9 +190,10 @@ def _fetch_jup_single_quote(input_mint: str, output_mint: str, amount: int, time
 
 def simulate_jupiter_roundtrip(mint: str, timeout: float = 2.6) -> dict:
     """
-    SIMULASI PULANG-PERGI NYATA (0.1 SOL -> Token -> SOL) DI SLOT VALIDATOR DETIK INI:
-    1. Membuktikan koin 100% BISA DIJUAL KEMBALI (Anti Honeypot Jual & Anti Empty-Bin DLMM).
-    2. Mengukur friksi riil pulang-pergi (LP fee + price impact beli & jual + pajak Token-2022).
+    SIMULASI PULANG-PERGI PARALEL (0.1 SOL + STRESS-TEST KEDALAMAN 1.0 SOL) DI SLOT DETIK INI:
+    1. Membuktikan koin 100% BISA DIJUAL KEMBALI (Anti Honeypot Jual & Pajak Token-2022).
+    2. Menembak kuotasi jual 0.1 SOL & 1.0 SOL secara PARALEL (0ms tambahan waktu tunggu!) untuk membongkar
+       jebakan Meteora DLMM / CLMM "Hollow Bin" (0.1 SOL lancar tapi 1.0 SOL terjun ke jurang kosong).
     3. Mengekstrak harga spot live on-chain untuk menangkap dump/pump yang belum muncul di DexScreener!
     """
     q_buy = _fetch_jup_single_quote(SOL_MINT, mint, TEST_BUY_LAMPORTS, timeout=timeout)
@@ -201,7 +204,13 @@ def simulate_jupiter_roundtrip(mint: str, timeout: float = 2.6) -> dict:
     if out_tokens_raw <= 0:
         return {"ok": False, "reason": "Simulasi beli menghasilkan 0 token (Kolam kering)"}
 
-    q_sell = _fetch_jup_single_quote(mint, SOL_MINT, out_tokens_raw, timeout=timeout)
+    depth_tokens_raw = out_tokens_raw * TEST_DEPTH_MULTIPLIER
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as jup_exec:
+        f_sell_01 = jup_exec.submit(_fetch_jup_single_quote, mint, SOL_MINT, out_tokens_raw, timeout)
+        f_sell_depth = jup_exec.submit(_fetch_jup_single_quote, mint, SOL_MINT, depth_tokens_raw, timeout)
+        q_sell = f_sell_01.result()
+        q_depth = f_sell_depth.result()
+
     if not q_sell:
         return {"ok": False, "reason": "JEBAKAN HONEYPOT: Bisa dibeli tapi TIDAK BISA DIJUAL kembali ke SOL!"}
 
@@ -209,13 +218,32 @@ def simulate_jupiter_roundtrip(mint: str, timeout: float = 2.6) -> dict:
     if sol_back_lamports <= 0:
         return {"ok": False, "reason": "JEBAKAN HONEYPOT: Estimasi pencairan SOL kembali = 0"}
 
+    if not q_depth or int(q_depth.get("outAmount") or 0) <= 0:
+        return {
+            "ok": False,
+            "reason": "JEBAKAN LIKUIDITAS SEMU (Hollow Bin): 0.1 SOL bisa keluar, tapi pencairan 1.0 SOL gagal/kosong!"
+        }
+
+    depth_back_lamports = int(q_depth.get("outAmount") or 0)
+    expected_depth_lamports = float(TEST_BUY_LAMPORTS * TEST_DEPTH_MULTIPLIER)
+    depth_loss_pct = max(0.0, (1.0 - (depth_back_lamports / expected_depth_lamports)) * 100.0)
+    if depth_loss_pct > MAX_DEPTH_CLIFF_LOSS_PCT:
+        return {
+            "ok": False,
+            "reason": (
+                f"JEBAKAN JURANG LIKUIDITAS (DLMM/CLMM Tipis): Pencairan 1.0 SOL amblas "
+                f"-{depth_loss_pct:.1f}% (> {MAX_DEPTH_CLIFF_LOSS_PCT}%)!"
+            )
+        }
+
     rt_loss_pct = max(0.0, (1.0 - (sol_back_lamports / float(TEST_BUY_LAMPORTS))) * 100.0)
     return {
         "ok": True,
         "in_lamports": TEST_BUY_LAMPORTS,
         "out_tokens_raw": out_tokens_raw,
         "sol_back_lamports": sol_back_lamports,
-        "rt_loss_pct": round(rt_loss_pct, 2)
+        "rt_loss_pct": round(rt_loss_pct, 2),
+        "depth_loss_pct": round(depth_loss_pct, 2)
     }
 
 
@@ -457,15 +485,22 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     if cvd_ratio < min_cvd:
         return False, f"CVD Net Inflow kurang kuat (+{cvd_ratio}% < +{min_cvd}%)", {}
 
-    # 7. PENANGKAL DEV LICIK #2: Anti-Siphon Bot (Banyak Klik Buy Kecil vs Sedikit Sell Raksasa)
+    # 7. PENANGKAL DEV LICIK #2: Anti-Siphon Bot M5 & H1 (Banyak Klik Buy Kecil vs Cicilan Sell Bandar)
+    total_h1 = buys_h1 + sells_h1
     if buy_sell_ratio_m5 >= 2.8 and vol_m5 >= 5000.0 and p_m5 < 8.5:
         return (
             False,
             f"Terdeteksi Siphon Bot Dev: Rasio klik {buy_sell_ratio_m5:.1f}x tapi harga tertahan (+{p_m5:.1f}%) -> Sell paus diam-diam!",
             {}
         )
+    if age_minutes >= 30.0 and total_h1 >= 600 and buy_sell_ratio_h1 >= 2.20 and vol_h1 >= 40_000.0 and p_h1 < 12.0:
+        return (
+            False,
+            f"Terdeteksi Siphon Distribusi 1 Jam: Klik Buy H1 {buy_sell_ratio_h1:.2f}x tapi harga tertahan (+{p_h1:.1f}%) -> Bandar cicil jual!",
+            {}
+        )
 
-    # 8. PENANGKAL DEV LICIK #3: Anti-Wash-Breakout Churn & Perputaran Suplai (Adaptif Usia Koin)
+    # 8. PENANGKAL DEV LICIK #3: Anti-Wash-Breakout, Anti-Churn Sideways, & Perputaran Suplai
     vol_to_liq_m5 = vol_m5 / max(1.0, liq)
     if vol_to_liq_m5 > 2.4:
         return (
@@ -475,6 +510,13 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         )
 
     turnover_h1 = vol_h1 / max(1.0, mc)
+    if age_minutes >= 30.0 and turnover_h1 >= 1.65 and p_h1 < 14.0:
+        return (
+            False,
+            f"Terdeteksi Distribusi Churn Bandar: Volume 1j sangat besar ({turnover_h1:.2f}x MC) tapi harga jalan di tempat (+{p_h1:.1f}%)",
+            {}
+        )
+
     req_turnover_h1 = c_cfg["mature_turnover_h1"] if is_proven_climber else c_cfg["min_turnover_h1"]
     if age_minutes >= 25.0 and turnover_h1 < req_turnover_h1:
         return (
@@ -496,14 +538,32 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             {}
         )
 
-    # 10. Ukuran Tiket & Komitmen Tangki Bahan Bakar
+    # 10. Ukuran Tiket M5 + H1 & Verifikasi Komitmen Modal Nyata (Tanpa Diskon Sosmed Gratis!)
     avg_ticket = vol_m5 / max(1, total_m5)
-    has_commitment = (boost_amount >= 50) or (pair_count >= 2) or bool((best_pair.get("info") or {}).get("socials"))
+    has_commitment = (boost_amount >= 100) or (pair_count >= 2 and liq >= 35_000.0) or is_proven_climber
     effective_min_ticket = c_cfg["min_avg_ticket"] * (0.85 if has_commitment else 1.0)
     if vol_m5 < 2500.0 or avg_ticket < effective_min_ticket:
         return (
             False,
             f"Order rata-rata terlalu receh/micro-bot (${avg_ticket:.1f} < ${effective_min_ticket:.1f})",
+            {}
+        )
+
+    # PENANGKAL DEV LICIK #4 (V2.4): Pembunuh Bump-Bot / Botnet Ribuan Transaksi 1 Jam ($Leonida Guard)
+    avg_ticket_h1 = vol_h1 / max(1, total_h1)
+    tx_per_1k_liq_h1 = total_h1 / max(1.0, liq / 1000.0)
+    if total_h1 >= 250:
+        min_ticket_h1 = max(16.0, effective_min_ticket * 0.78)
+        if avg_ticket_h1 < min_ticket_h1:
+            return (
+                False,
+                f"Terdeteksi Botnet Micro-Order H1: Tiket 1 jam hanya ${avg_ticket_h1:.1f} (< ${min_ticket_h1:.1f} dari {total_h1} tx)",
+                {}
+            )
+    if total_h1 >= 1200 and tx_per_1k_liq_h1 > 220.0 and avg_ticket_h1 < 35.0:
+        return (
+            False,
+            f"Terdeteksi Spam Frekuensi Botnet H1: {total_h1} tx/jam pada LP ${liq:,.0f} ({tx_per_1k_liq_h1:.0f} tx/$1k LP)",
             {}
         )
 
@@ -566,9 +626,14 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
 
 
 # ==============================================================================
-# MODUL 3: AUDIT KONTRAK, SALDO DEV, LP ASLI (HARD SOL), & SINDIKAT CABAL TOP-20
+# MODUL 3: AUDIT KONTRAK, SALDO DEV, LP ASLI (HARD SOL), & ANTI NANO-SWARM V2.4
 # ==============================================================================
-def analyze_holders_and_lp_lock(rug_data: dict, pair_address: str = "") -> tuple[bool, str, dict]:
+def analyze_holders_and_lp_lock(
+    rug_data: dict,
+    pair_address: str = "",
+    mc_usd: float = 0.0,
+    age_minutes: float = 60.0
+) -> tuple[bool, str, dict]:
     if not isinstance(rug_data, dict):
         return False, "Audit RugCheck timeout (Fail-Closed Guard)", {}
 
@@ -733,6 +798,52 @@ def analyze_holders_and_lp_lock(rug_data: dict, pair_address: str = "") -> tuple
     if top10_pure_pct > 19.5:
         return False, f"Top 10 Pure Holders terlalu pekat ({top10_pure_pct:.1f}% > 19.5%)", {}
 
+    # 6. PENANGKAL DEV LICIK #5 (V2.4): Verifikasi Jumlah Partisipan Nyata & Anti Botnet Nano-Swarm (< Top-20)
+    total_holders = int(rug_data.get("totalHolders") or 0)
+    if total_holders > 0 and mc_usd >= 25_000.0:
+        min_holders_req = 150 if mc_usd >= 228_000.0 else (90 if mc_usd >= 128_000.0 else 45)
+        if total_holders < min_holders_req:
+            return (
+                False,
+                f"Partisipan holder terlalu tipis untuk MC ${mc_usd:,.0f} ({total_holders} < {min_holders_req} holders) -> Pump segelintir dompet!",
+                {}
+            )
+
+    # Hukum Konservasi Pareto (Pembunuh Mutlak Modus $Leonida 3.395 Dompet Bot Nano < 0.25%):
+    # Jika >= 65% suplai berada di luar pool AMM, secara matematis mustahil pada pasar organik
+    # 10 holder terbesar digabung hanya memegang < 5.2% (atau holder #1 < 0.65%).
+    outside_pool_pct = max(0.0, 100.0 - pool_total_pct)
+    if outside_pool_pct >= 65.0 and (top10_pure_pct < 5.2 or max_single_pure < 0.65):
+        return (
+            False,
+            f"Terdeteksi Botnet Nano-Swarm: {outside_pool_pct:.1f}% suplai di luar pool tapi Top 10 Holder hanya "
+            f"{top10_pure_pct:.1f}% (Max {max_single_pure:.2f}%) -> Suplai dicacah ke ratusan/ribuan dompet bot!",
+            {}
+        )
+
+    # Anti-Decoy Nano-Swarm: Jika dev sengaja menaruh 1-3 dompet umpan (~2%) di atas namun mencacah >70% sisanya ke ribuan bot
+    if len(pure_holdings) >= 10 and outside_pool_pct >= 70.0:
+        rank5_pct = pure_holdings[4]["pct"]
+        if top10_pure_pct < 6.0 or rank5_pct < 0.45:
+            return (
+                False,
+                f"Terdeteksi Decoy Nano-Swarm: {outside_pool_pct:.1f}% suplai di luar pool tapi Holder #5 anjlok ke "
+                f"{rank5_pct:.2f}% (Top 10: {top10_pure_pct:.1f}%) -> Ekor ribuan dompet bot!",
+                {}
+            )
+
+    # Anti-Randomized Block-0 Bundler pada koin muda (< 35 menit & < 450 holders):
+    # Menangkap skrip randomizer dev yang menyebar 7+ dompet rapat di 1.10%-2.60% tanpa mengganggu koin matang seperti $REMUS!
+    if 0 < total_holders < 450 and age_minutes < 35.0:
+        packed_mid = [x["pct"] for x in pure_holdings[:15] if 1.10 <= x["pct"] <= 2.60]
+        if len(packed_mid) >= 7 and (max(packed_mid) - min(packed_mid)) <= 0.35:
+            return (
+                False,
+                f"Terdeteksi Randomized Bundler Dev: {len(packed_mid)} dompet mengumpul rapat "
+                f"({min(packed_mid):.2f}%-{max(packed_mid):.2f}%) pada koin muda!",
+                {}
+            )
+
     # Deteksi Kluster Cabal Kloningan Menengah (1.20% - 4.50%):
     # Hanya blokir jika dev memecah saldo kloningan identik (>= 4 dompet selisih <= 0.015%, atau >= 3 paus >= 2.40% selisih <= 0.04%)
     # sehingga kurva Pareto ritel organik yang menurun alami (mis. 1.75%, 1.71%, 1.69%, 1.66%, 1.59%) TIDAK terkena false-positive!
@@ -837,8 +948,13 @@ def audit_and_dispatch_candidate(
                 "reason": f"Risiko On-Chain RugCheck: {r.get('name')}"
             }
 
-    # 2. Verifikasi Kontrak, Saldo Dev <= 2.5%, Hard-SOL Backing, & Top-20 Cabal
-    holders_ok, holders_reason, holder_meta = analyze_holders_and_lp_lock(rug_data, pair_address)
+    # 2. Verifikasi Kontrak, Saldo Dev <= 2.5%, Hard-SOL Backing, & Anti-Nano-Swarm V2.4
+    holders_ok, holders_reason, holder_meta = analyze_holders_and_lp_lock(
+        rug_data,
+        pair_address,
+        mc_usd=mc,
+        age_minutes=float(metrics.get("age_minutes", 60.0))
+    )
     if not holders_ok:
         return {
             "token": f"{name} (${symbol})",
@@ -847,7 +963,7 @@ def audit_and_dispatch_candidate(
             "reason": holders_reason
         }
 
-    # 3. Verifikasi Simulasi Jual-Beli Pulang-Pergi 0.1 SOL (Anti Honeypot & Pajak Siluman)
+    # 3. Verifikasi Simulasi Jual-Beli Pulang-Pergi 0.1 SOL + Stress-Test Kedalaman 1.0 SOL Paralel
     if not rt_res.get("ok"):
         return {
             "token": f"{name} (${symbol})",
@@ -857,6 +973,7 @@ def audit_and_dispatch_candidate(
         }
 
     rt_loss_pct = float(rt_res["rt_loss_pct"])
+    depth_loss_pct = float(rt_res.get("depth_loss_pct", rt_loss_pct))
     if rt_loss_pct > MAX_ROUNDTRIP_LOSS_PCT:
         return {
             "token": f"{name} (${symbol})",
@@ -937,7 +1054,7 @@ def audit_and_dispatch_candidate(
     safe_symbol = _esc_md(symbol)
 
     alert_msg = (
-        f"🎯 *[CORRIDOR SNIPER V2: DELAY-PROOF & ROUND-TRIP VERIFIED]*\n\n"
+        f"🎯 *[CORRIDOR SNIPER V2.4: ANTI-BOTNET & DEPTH VERIFIED]*\n\n"
         f"🪙 *Token:* {safe_name} (`${safe_symbol}`)\n"
         f"📍 *Mint:* `{mint}`\n"
         f"🛤️ *Posisi:* `{metrics['corridor_name']}`\n\n"
@@ -946,7 +1063,7 @@ def audit_and_dispatch_candidate(
         f"🚧 *BATAS MAKSIMAL BOLEH BELI:* `${max_safe_entry_mc:,.0f}` *(Lewat ini = JANGAN BELI!)*\n"
         f"🎯 *Target Take-Profit Aman:* `${tp_mc:,.0f}` *(Est. Untung Bersih +{net_from_projected_pct}%)*\n"
         f"🛑 *Hard Stop-Loss:* `-{cut_loss}%` *(Wajib pasang otomatis)*\n\n"
-        f"🔄 *Uji Jual-Beli 0.1 SOL:* `BISA DIJUAL` (Friksi Riil `{rt_loss_pct}%` + Tip `{PRIORITY_TIP_BUFFER_PCT}%`)\n"
+        f"🔄 *Uji Jual 0.1 & 1.0 SOL:* `LOLOS` (Friksi `{rt_loss_pct}%` | Depth 1 SOL `{depth_loss_pct}%`)\n"
         f"⚡ *Nafas Baru:* 5m `+{metrics['price_change_m5']}%` | Akselerasi `{metrics['accel_ratio']}x` | Turnover 1h `{metrics['turnover_h1']}x`\n"
         f"📊 *Orderflow M5:* `{buys_m5} Buy` vs `{sells_m5} Sell` (`{metrics['buy_sell_ratio']}x` | CVD `+{metrics['cvd_ratio']}%`)\n"
         f"💧 *Likuiditas:* `${liq:,.0f}` ({_esc_md(dex_id.title())} | SOL Asli `{holder_meta['sol_backing_ratio']}%` | Lock `{holder_meta['lp_locked_pct']}%`)\n"
@@ -1220,7 +1337,7 @@ class handler(BaseHTTPRequestHandler):
             chat_id = getattr(config, "TELEGRAM_CHAT_ID", None) or os.getenv("TELEGRAM_CHAT_ID")
             ledger = _load_corridor_ledger()
             response_data = {
-                "service": "Corridor Sniper V2.1 — Production Hardened",
+                "service": "Corridor Sniper V2.4 — Anti-Botnet & Depth-Verified",
                 "status": "healthy",
                 "python_version": sys.version.split()[0],
                 "engine_loaded": engine is not None,
@@ -1233,6 +1350,7 @@ class handler(BaseHTTPRequestHandler):
                     "batch_candidate_limit": BATCH_CANDIDATE_LIMIT,
                     "pipeline_reaction_delay_sec": PIPELINE_REACTION_DELAY_SEC,
                     "max_roundtrip_loss_pct": MAX_ROUNDTRIP_LOSS_PCT,
+                    "max_depth_1sol_cliff_pct": MAX_DEPTH_CLIFF_LOSS_PCT,
                     "min_net_profit_after_delay_pct": MIN_NET_PROFIT_AFTER_DELAY_PCT,
                     "alert_cooldown_sec": ALERT_COOLDOWN_SEC
                 },
@@ -1350,7 +1468,7 @@ class handler(BaseHTTPRequestHandler):
         elif action == "scan" or is_cron:
             scan_summary = run_live_market_scan(engine, config)
             response_data = {
-                "service": "Corridor Sniper V2 — Delay-Compensated & Round-Trip Verified Radar",
+                "service": "Corridor Sniper V2.4 — Anti-Botnet, Nano-Swarm & Depth-Verified Radar",
                 "status": "ready",
                 "is_cron_call": is_cron,
                 "timestamp": time.time(),
@@ -1365,12 +1483,12 @@ class handler(BaseHTTPRequestHandler):
                     "corridor_3_whale": "$525k - $650k -> TP <= $825k (Front-run tembok $1M)"
                 },
                 "execution_and_delay_shields": [
-                    "Batch 25-Mint Single-Shot Discovery (3x cakupan pasar dalam ~0.8-1.4 detik)",
+                    "Batch 30-Mint Single-Shot + PumpSwap Organic Discovery (~0.35-1.2 detik)",
                     "22-Second Forward Delay Projection + Hard MAX ENTRY MC Guard di Telegram",
-                    "Live Slot Drift Detector (Jupiter Real-Time vs DexScreener Cache Lag -6% / +12%)",
-                    "True 0.1 SOL Round-Trip Swap Simulation (SOL -> Token -> SOL <= 5.5% total loss)",
-                    "On-Chain Mint/Freeze/Token-2022 Tax Block + Dev Balance <= 2.5% + Hard-SOL LP >= 32%",
-                    "Per-Corridor Persistent Cooldown Ledger (/tmp TTL) & Telegram Markdown Sanitizer"
+                    "Anti-Nano-Swarm Pareto Floor & Anti-Decoy Whale (Blokir 3.000+ dompet bot < Top-20)",
+                    "H1 Botnet Hyper-Frequency & Micro-Ticket Guard + Anti-Churn Distribution Trap",
+                    "Parallel 0.1 SOL + 1.0 SOL Jupiter Round-Trip & DLMM Hollow-Bin Cliff Check (0ms extra lag)",
+                    "On-Chain Mint/Freeze/Token-2022 Tax Block + Dev Balance <= 2.5% + Hard-SOL LP >= 32%"
                 ]
             }
 
