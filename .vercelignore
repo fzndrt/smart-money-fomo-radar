@@ -1,0 +1,10 @@
+tests/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+*.log
+coverage/
+.DS_Store
