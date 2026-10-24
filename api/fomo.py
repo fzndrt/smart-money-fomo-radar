@@ -45,13 +45,16 @@ HARD_QUOTE_MINTS = {
     SOL_MINT,
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
+    "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",  # WBTC (Wormhole Official)
+    "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",  # cbBTC (Coinbase Official)
+    "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",  # USD1
 }
 TEST_BUY_LAMPORTS = 100_000_000          # Simulasi ukuran nyata 0.1 SOL (~$15) Beli -> Jual
 PIPELINE_REACTION_DELAY_SEC = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", getattr(config, "PIPELINE_REACTION_DELAY_SEC", 22.0)))
 PRIORITY_TIP_BUFFER_PCT = 1.0            # Buffer priority fee / Jito tip saat eksekusi nyata
 MAX_ROUNDTRIP_LOSS_PCT = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", getattr(config, "MAX_ROUNDTRIP_LOSS_PCT", 5.5)))
 MIN_NET_PROFIT_AFTER_DELAY_PCT = float(os.getenv("MIN_NET_PROFIT_AFTER_DELAY_PCT", getattr(config, "MIN_NET_PROFIT_AFTER_DELAY_PCT", 18.0)))
-BATCH_CANDIDATE_LIMIT = int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 25)))
+BATCH_CANDIDATE_LIMIT = min(30, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 30))))
 ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC", getattr(config, "ALERT_COOLDOWN_SEC", 2700)))  # Cooldown 45m per lorong
 
 
@@ -284,9 +287,10 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             "corridor_name": "Lorong 0: Early Ignition (Sebelum Tembok $100k)",
             "corridor_max_mc": 78_000.0,
             "min_liq": 10_500.0,
-            "min_turnover_h1": 0.65,
+            "min_turnover_h1": 0.55,
+            "mature_turnover_h1": 0.32,
             "min_cum_tx": 160,
-            "min_avg_ticket": 20.0,
+            "min_avg_ticket": 18.0,
             "target_tp_mc": tp_mc,
             "cut_loss_pct": 14.0
         }
@@ -299,9 +303,10 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             "corridor_name": "Lorong 1: Breakout Tembok $100k -> Menuju $190k",
             "corridor_max_mc": 168_000.0,
             "min_liq": 18_000.0,
-            "min_turnover_h1": 0.95,
+            "min_turnover_h1": 0.75,
+            "mature_turnover_h1": 0.22,
             "min_cum_tx": 420,
-            "min_avg_ticket": 25.0,
+            "min_avg_ticket": 22.0,
             "target_tp_mc": tp_mc,
             "cut_loss_pct": 13.5
         }
@@ -314,9 +319,10 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             "corridor_name": "Lorong 2: Lolos Ujian $200k -> Ruang Terbang ke $400k+",
             "corridor_max_mc": 315_000.0,
             "min_liq": 26_000.0,
-            "min_turnover_h1": 1.30,
+            "min_turnover_h1": 0.85,
+            "mature_turnover_h1": 0.14,
             "min_cum_tx": 900,
-            "min_avg_ticket": 32.0,
+            "min_avg_ticket": 26.0,
             "target_tp_mc": tp_mc,
             "cut_loss_pct": 14.0
         }
@@ -328,9 +334,10 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
         "corridor_name": "Lorong 3: Jebol Setengah Juta -> Front-Run $825k",
         "corridor_max_mc": 650_000.0,
         "min_liq": 48_000.0,
-        "min_turnover_h1": 1.20,
+        "min_turnover_h1": 0.70,
+        "mature_turnover_h1": 0.09,
         "min_cum_tx": 1800,
-        "min_avg_ticket": 48.0,
+        "min_avg_ticket": 30.0,
         "target_tp_mc": tp_mc,
         "cut_loss_pct": 13.5
     }
@@ -357,40 +364,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     if liq_mc_ratio < min_liq_ratio:
         return False, f"Kolam LP terlalu tipis terhadap MC ({liq_mc_ratio:.1f}% < {min_liq_ratio}%)", {}
 
-    # 2. Usia Pair: Lolos Jito Bundle Block-0 (>= 3.5m) & Bukan Zombie Tua (<= 16 jam)
-    pair_created_at_ms = best_pair.get("pairCreatedAt")
-    now_ms = time.time() * 1000.0
-    if pair_created_at_ms:
-        age_minutes = (now_ms - float(pair_created_at_ms)) / 60000.0
-        if age_minutes < 3.5:
-            return False, f"Terlalu baru ({age_minutes:.1f}m < 3.5m): Fase rawan MEV bundle block-0", {}
-        if age_minutes > 960.0:
-            return False, f"Koin lama ({age_minutes/60.0:.1f} jam > 16j): Rawan jebakan re-pump koin mati", {}
-    else:
-        age_minutes = 12.0
-
-    # 3. Temperatur Candle Anti-Pucuk (+6.0% <= M5 <= +45.0%) & Anti Dead-Cat Bounce
-    price_change = best_pair.get("priceChange") or {}
-    p_m5 = float(price_change.get("m5", 0.0) or 0.0)
-    p_h1 = float(price_change.get("h1", 0.0) or 0.0)
-    p_h6 = float(price_change.get("h6", 0.0) or 0.0)
-
-    if p_m5 < 6.0:
-        return False, f"Momentum 5m belum menginjak gas ({p_m5:+.1f}% < +6.0%) - Tunggu dorongan naik", {}
-    if p_m5 > 45.0:
-        return False, f"ANTI-PUCUK: Candle 5m sudah kepanjangan (+{p_m5:.1f}% > +45%). Rawan koreksi sesaat!", {}
-    if p_h1 <= 0.0 or p_h6 < -12.0:
-        return False, f"Tren makro sedang distribusi/merah (H1: {p_h1:+.1f}%, H6: {p_h6:+.1f}%)", {}
-
-    # Anti Dead-Cat Bounce: koin >= 60 menit yang sempat ambruk lalu pantul kecil di 5m terakhir
-    if age_minutes >= 60.0 and p_h1 < (p_m5 * 0.60):
-        return (
-            False,
-            f"Jebakan Dead-Cat Bounce: Pantulan 5m (+{p_m5:.1f}%) di tengah tren 1 jam lemah (+{p_h1:.1f}%)",
-            {}
-        )
-
-    # 4. Data Orderflow M5, H1, dan Kumulatif H24
+    # 2. Data Orderflow M5, H1, dan Kumulatif H24
     txns = best_pair.get("txns") or {}
     m5_tx = txns.get("m5") or {}
     h1_tx = txns.get("h1") or {}
@@ -405,6 +379,48 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     vol_m5 = float(volumes.get("m5", 0.0) or 0.0)
     vol_h1 = float(volumes.get("h1", 0.0) or 0.0)
 
+    # 3. Usia Pair: Lolos Jito Bundle Block-0 (>= 3.5m) & Batas Koin Aktif (24j, atau 36j jika organik ramai)
+    pair_created_at_ms = best_pair.get("pairCreatedAt")
+    now_ms = time.time() * 1000.0
+    if pair_created_at_ms:
+        age_minutes = (now_ms - float(pair_created_at_ms)) / 60000.0
+        if age_minutes < 3.5:
+            return False, f"Terlalu baru ({age_minutes:.1f}m < 3.5m): Fase rawan MEV bundle block-0", {}
+        max_age_mins = 2160.0 if (cum_tx_24h >= 5000 and liq >= 30_000.0) else 1440.0
+        if age_minutes > max_age_mins:
+            return False, f"Koin lama ({age_minutes/60.0:.1f} jam > {max_age_mins/60.0:.0f}j): Rawan jebakan re-pump koin mati", {}
+    else:
+        age_minutes = 12.0
+
+    # 4. Temperatur Candle Anti-Pucuk & Anti Dead-Cat Bounce (Adaptif untuk Steady Climber Organik)
+    price_change = best_pair.get("priceChange") or {}
+    p_m5 = float(price_change.get("m5", 0.0) or 0.0)
+    p_h1 = float(price_change.get("h1", 0.0) or 0.0)
+    p_h6 = float(price_change.get("h6", 0.0) or 0.0)
+
+    is_proven_climber = (
+        age_minutes >= 45.0
+        and cum_tx_24h >= max(2500, c_cfg["min_cum_tx"] * 2)
+        and p_h1 >= 15.0
+        and p_h6 >= 20.0
+    )
+    min_p_m5 = 5.0 if is_proven_climber else 6.0
+
+    if p_m5 < min_p_m5:
+        return False, f"Momentum 5m belum menginjak gas ({p_m5:+.1f}% < +{min_p_m5:.1f}%) - Tunggu dorongan naik", {}
+    if p_m5 > 45.0:
+        return False, f"ANTI-PUCUK: Candle 5m sudah kepanjangan (+{p_m5:.1f}% > +45%). Rawan koreksi sesaat!", {}
+    if p_h1 <= 0.0 or p_h6 < -12.0:
+        return False, f"Tren makro sedang distribusi/merah (H1: {p_h1:+.1f}%, H6: {p_h6:+.1f}%)", {}
+
+    # Anti Dead-Cat Bounce: koin >= 60 menit yang sempat ambruk lalu pantul kecil di 5m terakhir
+    if age_minutes >= 60.0 and p_h1 < (p_m5 * 0.60):
+        return (
+            False,
+            f"Jebakan Dead-Cat Bounce: Pantulan 5m (+{p_m5:.1f}%) di tengah tren 1 jam lemah (+{p_h1:.1f}%)",
+            {}
+        )
+
     # 5. PENANGKAL DEV LICIK #1: Kepadatan Transaksi Seumur Hidup (Anti Bundled Ghost Pump)
     if cum_tx_24h < c_cfg["min_cum_tx"]:
         return (
@@ -413,7 +429,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             {}
         )
 
-    # 6. Dominasi Pembeli Nyata & Kesehatan Orderflow 1 Jam
+    # 6. Dominasi Pembeli Nyata & Kesehatan Orderflow 1 Jam (Kalibrasi MEV Arbitrase pada Pool Ramai)
     if total_m5 < 25 or sells_m5 >= buys_m5:
         return False, f"Partisipasi pembeli lemah ({buys_m5}B / {sells_m5}S)", {}
 
@@ -422,15 +438,24 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     if (buys_h1 + sells_h1) >= 80 and buy_sell_ratio_h1 < 1.05:
         return False, f"Distribusi H1 berat: Penjual mendominasi 1 jam terakhir (Rasio H1 {buy_sell_ratio_h1:.2f}x)", {}
 
-    if buy_sell_ratio_m5 < 2.0:
-        return False, f"Rasio Buy/Sell kurang dominan ({buy_sell_ratio_m5:.2f}x < 2.0x)", {}
+    high_tx_organic_flow = (
+        total_m5 >= 80
+        and is_proven_climber
+        and buy_sell_ratio_h1 >= 1.18
+    )
+    min_bs_m5 = 1.35 if high_tx_organic_flow else 1.85
+    min_cvd = 15.0 if high_tx_organic_flow else 29.8
+    h1_decay_floor = 0.82 if high_tx_organic_flow else 0.90
 
-    if age_minutes >= 20.0 and buy_sell_ratio_m5 < (buy_sell_ratio_h1 * 0.90):
+    if buy_sell_ratio_m5 < min_bs_m5:
+        return False, f"Rasio Buy/Sell kurang dominan ({buy_sell_ratio_m5:.2f}x < {min_bs_m5:.2f}x)", {}
+
+    if age_minutes >= 20.0 and buy_sell_ratio_m5 < (buy_sell_ratio_h1 * h1_decay_floor):
         return False, f"Momentum beli melambat (Rasio M5 {buy_sell_ratio_m5:.2f}x < H1 {buy_sell_ratio_h1:.2f}x)", {}
 
     cvd_ratio = round(((buys_m5 - sells_m5) / max(1, total_m5)) * 100.0, 1)
-    if cvd_ratio < 33.3:
-        return False, f"CVD Net Inflow kurang kuat (+{cvd_ratio}% < +33.3%)", {}
+    if cvd_ratio < min_cvd:
+        return False, f"CVD Net Inflow kurang kuat (+{cvd_ratio}% < +{min_cvd}%)", {}
 
     # 7. PENANGKAL DEV LICIK #2: Anti-Siphon Bot (Banyak Klik Buy Kecil vs Sedikit Sell Raksasa)
     if buy_sell_ratio_m5 >= 2.8 and vol_m5 >= 5000.0 and p_m5 < 8.5:
@@ -440,7 +465,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             {}
         )
 
-    # 8. PENANGKAL DEV LICIK #3: Anti-Wash-Breakout Churn & Perputaran Suplai (Cost-Basis Reset)
+    # 8. PENANGKAL DEV LICIK #3: Anti-Wash-Breakout Churn & Perputaran Suplai (Adaptif Usia Koin)
     vol_to_liq_m5 = vol_m5 / max(1.0, liq)
     if vol_to_liq_m5 > 2.4:
         return (
@@ -450,10 +475,11 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         )
 
     turnover_h1 = vol_h1 / max(1.0, mc)
-    if age_minutes >= 25.0 and turnover_h1 < c_cfg["min_turnover_h1"]:
+    req_turnover_h1 = c_cfg["mature_turnover_h1"] if is_proven_climber else c_cfg["min_turnover_h1"]
+    if age_minutes >= 25.0 and turnover_h1 < req_turnover_h1:
         return (
             False,
-            f"Suplai bawah belum ganti tangan: Vol 1h/MC baru {turnover_h1:.2f}x (< {c_cfg['min_turnover_h1']}x)",
+            f"Suplai bawah belum ganti tangan: Vol 1h/MC baru {turnover_h1:.2f}x (< {req_turnover_h1:.2f}x)",
             {}
         )
 
@@ -462,10 +488,11 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     vol_rate_m5 = vol_m5 / 5.0
     vol_rate_h1 = vol_h1 / effective_h1_mins
     accel_ratio = vol_rate_m5 / max(1.0, vol_rate_h1)
-    if age_minutes >= 15.0 and accel_ratio < 1.05 and (vol_m5 / max(1.0, mc)) < 0.10:
+    min_accel = 0.92 if high_tx_organic_flow else 1.05
+    if age_minutes >= 15.0 and accel_ratio < min_accel and (vol_m5 / max(1.0, mc)) < 0.10:
         return (
             False,
-            f"Volume sedang mendingin (Akselerasi {accel_ratio:.2f}x < 1.05x & intensitas M5 rendah)",
+            f"Volume sedang mendingin (Akselerasi {accel_ratio:.2f}x < {min_accel:.2f}x & intensitas M5 rendah)",
             {}
         )
 
@@ -502,14 +529,16 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             {}
         )
 
+    organic_depth_bonus = 8.0 if high_tx_organic_flow else 0.0
     score = min(
         99,
         int(
             35.0
-            + min(25.0, (buy_sell_ratio_m5 / 3.0) * 25.0)
-            + min(20.0, (cvd_ratio / 80.0) * 20.0)
-            + min(12.0, (accel_ratio / 2.0) * 12.0)
+            + min(25.0, (buy_sell_ratio_m5 / 2.6) * 25.0)
+            + min(20.0, (cvd_ratio / 65.0) * 20.0)
+            + min(12.0, (accel_ratio / 1.8) * 12.0)
             + (8.0 if has_commitment else 3.0)
+            + organic_depth_bonus
         )
     )
     if score < 76:
@@ -556,14 +585,40 @@ def analyze_holders_and_lp_lock(rug_data: dict, pair_address: str = "") -> tuple
     if token_info.get("freezeAuthority") or rug_data.get("freezeAuthority"):
         return False, "BAHAYA KONTRAK: Freeze Authority masih aktif (Dompet pembeli bisa dibekukan!)", {}
 
-    # 2. Blokir Pajak Siluman Token-2022 & Ekstensi Penyedot Saldo
+    # 2. Blokir Pajak Siluman Token-2022 & Ekstensi Penyedot Saldo (Tanpa False-Positive pada field null PumpSwap!)
     transfer_fee = rug_data.get("transferFee") or {}
     if float(transfer_fee.get("pct") or 0.0) > 0.0:
         return False, f"Pajak Transfer Token-2022 terdeteksi ({transfer_fee.get('pct')}%)", {}
 
-    ext_str = json.dumps(rug_data.get("token_extensions") or "").lower()
-    if any(bad_ext in ext_str for bad_ext in ("permanentdelegate", "transferhook", "nontransferable")):
-        return False, "Ekstensi berbahaya Token-2022 terdeteksi (PermanentDelegate / TransferHook)", {}
+    tok_ext = rug_data.get("token_extensions")
+    if isinstance(tok_ext, dict):
+        if tok_ext.get("nonTransferable") is True:
+            return False, "Ekstensi berbahaya Token-2022 aktif: NonTransferable (Honeypot tidak bisa ditransfer!)", {}
+        if tok_ext.get("permanentDelegate") is not None:
+            pd_val = tok_ext.get("permanentDelegate")
+            if not isinstance(pd_val, dict) or pd_val.get("delegate") or pd_val.get("authority"):
+                return False, "Ekstensi berbahaya Token-2022 aktif: PermanentDelegate (Dev bisa menyedot saldo!)", {}
+        if tok_ext.get("transferHook") is not None:
+            th_val = tok_ext.get("transferHook")
+            if not isinstance(th_val, dict) or th_val.get("programId") or th_val.get("authority"):
+                return False, "Ekstensi berbahaya Token-2022 aktif: TransferHook (Kontrak kustom pemblokir jual!)", {}
+        if tok_ext.get("pausableConfig") is not None:
+            pc_val = tok_ext.get("pausableConfig")
+            if not isinstance(pc_val, dict) or pc_val.get("authority") or pc_val.get("paused"):
+                return False, "Ekstensi berbahaya Token-2022 aktif: PausableConfig", {}
+        tf_cfg = tok_ext.get("transferFeeConfig")
+        if isinstance(tf_cfg, dict):
+            newer_bps = float((tf_cfg.get("newerTransferFee") or {}).get("transferFeeBasisPoints") or 0.0)
+            older_bps = float((tf_cfg.get("olderTransferFee") or {}).get("transferFeeBasisPoints") or 0.0)
+            if max(newer_bps, older_bps) > 0.0:
+                return False, f"Pajak Transfer Token-2022 aktif ({max(newer_bps, older_bps) / 100.0:.2f}%)", {}
+    elif isinstance(tok_ext, list):
+        ext_names = {
+            str(x if not isinstance(x, dict) else (x.get("extension") or x.get("name") or "")).lower()
+            for x in tok_ext
+        }
+        if ext_names & {"permanentdelegate", "transferhook", "nontransferable"}:
+            return False, "Ekstensi berbahaya Token-2022 terdeteksi (PermanentDelegate / TransferHook)", {}
 
     # 3. Verifikasi Kepemilikan Dev Asli <= 2.5% (Syarat Koin Ditinggal / Bersih dari Dev)
     creator_bal_raw = float(rug_data.get("creatorBalance") or 0.0)
@@ -592,6 +647,7 @@ def analyze_holders_and_lp_lock(rug_data: dict, pair_address: str = "") -> tuple
         if m.get("liquidityA"): market_vaults.add(str(m["liquidityA"]).lower())
         if m.get("liquidityB"): market_vaults.add(str(m["liquidityB"]).lower())
         if m.get("pubkey"): market_vaults.add(str(m["pubkey"]).lower())
+        if m.get("mintLP"): market_vaults.add(str(m["mintLP"]).lower())
 
         lp = m.get("lp") or {}
         base_usd = float(lp.get("baseUSD") or 0.0)
@@ -612,7 +668,7 @@ def analyze_holders_and_lp_lock(rug_data: dict, pair_address: str = "") -> tuple
                 if sol_backing_ratio < 32.0:
                     return (
                         False,
-                        f"Jebakan Single-Sided LP Palsu: Isi kolam hanya {sol_backing_ratio:.1f}% uang SOL/USDC asli (< 32%)",
+                        f"Jebakan Single-Sided LP Palsu: Isi kolam hanya {sol_backing_ratio:.1f}% aset keras SOL/USDC/WBTC asli (< 32%)",
                         {}
                     )
 
@@ -637,18 +693,22 @@ def analyze_holders_and_lp_lock(rug_data: dict, pair_address: str = "") -> tuple
             {}
         )
 
-    # 5. Pemisahan Pool AMM vs Pure Holders & Deteksi Sindikat Cabal
+    # 5. Pemisahan Pool AMM (termasuk Vault Owner PumpSwap/Meteora) vs Pure Holders & Deteksi Sindikat Cabal
     norm_pair = (pair_address or "").lower()
     pool_holdings = []
     pure_holdings = []
 
     for h in holders[:25]:
         addr = str(h.get("address") or "").lower()
+        owner = str(h.get("owner") or "").lower()
         pct = float(h.get("pct") or 0.0)
         is_pool = (
             addr == norm_pair
+            or (owner and owner == norm_pair)
             or addr in market_vaults
+            or (owner and owner in market_vaults)
             or addr in KNOWN_POOL_IDENTIFIERS
+            or (owner and owner in KNOWN_POOL_IDENTIFIERS)
             or "burn" in addr
             or "dead" in addr
             or (pct >= 18.0 and (addr.startswith("5q") or addr.startswith("67") or addr.startswith("ca")))
@@ -673,25 +733,37 @@ def analyze_holders_and_lp_lock(rug_data: dict, pair_address: str = "") -> tuple
     if top10_pure_pct > 19.5:
         return False, f"Top 10 Pure Holders terlalu pekat ({top10_pure_pct:.1f}% > 19.5%)", {}
 
-    # Deteksi Kluster Cabal Menengah (1.2% - 4.2%)
-    mid_holders = [x["pct"] for x in pure_holdings if 1.2 <= x["pct"] <= 4.2]
+    # Deteksi Kluster Cabal Kloningan Menengah (1.20% - 4.50%):
+    # Hanya blokir jika dev memecah saldo kloningan identik (>= 4 dompet selisih <= 0.015%, atau >= 3 paus >= 2.40% selisih <= 0.04%)
+    # sehingga kurva Pareto ritel organik yang menurun alami (mis. 1.75%, 1.71%, 1.69%, 1.66%, 1.59%) TIDAK terkena false-positive!
+    mid_holders = [x["pct"] for x in pure_holdings[:20] if 1.20 <= x["pct"] <= 4.50]
     for p_ref in mid_holders:
-        cluster = [p for p in mid_holders if abs(p - p_ref) <= 0.38]
-        if len(cluster) >= 3 and sum(cluster) >= 6.2:
+        cloned_mid = [p for p in mid_holders if abs(p - p_ref) <= 0.015]
+        if len(cloned_mid) >= 4 and sum(cloned_mid) >= 5.2:
             return (
                 False,
-                f"Cabal Cluster Terdeteksi: Dev memecah {sum(cluster):.1f}% suplai ke {len(cluster)} dompet seragam",
+                f"Cabal Cluster Terdeteksi: Dev memecah {sum(cloned_mid):.1f}% suplai ke {len(cloned_mid)} dompet kloningan (~{p_ref:.2f}%)",
                 {}
             )
 
-    # Deteksi Sindikat Micro-Split CEX (0.65% - 1.20% di Top 20)
+    heavy_holders = [x["pct"] for x in pure_holdings[:15] if 2.40 <= x["pct"] <= 4.60]
+    for p_ref in heavy_holders:
+        heavy_cluster = [p for p in heavy_holders if abs(p - p_ref) <= 0.04]
+        if len(heavy_cluster) >= 3:
+            return (
+                False,
+                f"Heavy Splitter Cabal: {len(heavy_cluster)} paus memegang porsi kembar (~{p_ref:.2f}%, total {sum(heavy_cluster):.1f}%)",
+                {}
+            )
+
+    # Deteksi Sindikat Micro-Split CEX (Dompet Kloningan Presisi di Top 20: >= 5 dompet selisih <= 0.03%)
     micro_holders = [x["pct"] for x in pure_holdings[:20] if 0.65 <= x["pct"] < 1.20]
     for p_ref in micro_holders:
-        m_cluster = [p for p in micro_holders if abs(p - p_ref) <= 0.14]
+        m_cluster = [p for p in micro_holders if abs(p - p_ref) <= 0.03]
         if len(m_cluster) >= 5:
             return (
                 False,
-                f"Micro-Split CEX Syndicate: {len(m_cluster)} dompet memegang persentase identik (~{p_ref:.2f}%)",
+                f"Micro-Split CEX Syndicate: {len(m_cluster)} dompet memegang persentase kloningan identik (~{p_ref:.2f}%)",
                 {}
             )
 
@@ -794,9 +866,14 @@ def audit_and_dispatch_candidate(
         }
 
     # 4. DETEKSI LAG DEXSCREENER VS HARGA SPOT REAL-TIME SLOT SOLANA DETIK INI!
-    # Menangkap live rug 5 detik terakhir ATAU harga yang sudah terbang duluan sebelum sinyal terkirim
+    # Hanya bandingkan pool WSOL jika likuiditasnya representatif (>= $8k & >= 25% pool utama) agar tidak tertipu pool debu
     wsol_pair = next(
-        (p for p in pairs if (p.get("quoteToken") or {}).get("address") == SOL_MINT and float(p.get("priceNative") or 0.0) > 0.0),
+        (
+            p for p in pairs
+            if (p.get("quoteToken") or {}).get("address") == SOL_MINT
+            and float(p.get("priceNative") or 0.0) > 0.0
+            and float((p.get("liquidity") or {}).get("usd") or 0.0) >= max(8000.0, liq * 0.25)
+        ),
         None
     )
     live_drift_pct = 0.0
@@ -953,16 +1030,28 @@ def run_live_market_scan(engine, config) -> dict:
     t0 = time.time()
     print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch 25-Mint Delay-Compensated Scan...", flush=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as feed_exec:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as feed_exec:
         f_b_latest = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/latest/v1", 2.8)
         f_b_top = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/top/v1", 2.8)
         f_prof = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-profiles/latest/v1", 2.8)
+        f_organic = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=pumpswap", 2.8)
         boosts_latest = f_b_latest.result()
         boosts_top = f_b_top.result()
         profiles = f_prof.result()
+        organic_search = f_organic.result()
 
     ordered_mints = []
     boost_map = {}
+
+    # Prioritaskan koin organik PumpSwap yang sedang aktif bergerak di rentang Lorong ($25k-$650k) meskipun tanpa iklan Boost!
+    if isinstance(organic_search, dict):
+        for op in (organic_search.get("pairs") or []):
+            if op.get("chainId") == "solana":
+                op_mc = float(op.get("marketCap") or op.get("fdv") or 0.0)
+                op_vol5 = float((op.get("volume") or {}).get("m5") or 0.0)
+                op_addr = (op.get("baseToken") or {}).get("address")
+                if op_addr and 25_000.0 <= op_mc <= 650_000.0 and op_vol5 >= 1500.0:
+                    ordered_mints.append(op_addr)
 
     for feed in (boosts_latest, boosts_top):
         if isinstance(feed, list):
