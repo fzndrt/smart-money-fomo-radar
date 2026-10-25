@@ -300,11 +300,27 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             {}
         )
 
-    # ZONA MERAH 4: Area Pucuk / Distribusi Bandar Menuju $1M (> $650k)
-    if mc > 650_000.0:
+    # ZONA MERAH 4: Tembok Psikologis Sakral $1 Juta ($650k - $1.08M)
+    if 650_000.0 < mc <= 1_080_000.0:
         return (
             False,
-            f"ZONA PUCUK DISTRIBUSI (${mc:,.0f} > $650k): Terlalu dekat tembok jual $800k-$1M!",
+            f"ZONA PUCUK DISTRIBUSI TEMBOK $1M (${mc:,.0f}): Rawan bantingan take-profit angka bulat $1 Juta. Tunggu jebol bersih > $1.08M!",
+            {}
+        )
+
+    # ZONA MERAH 5: Tembok Distribusi Early-Whale 20x ($2.65M - $5.25M)
+    if 2_650_000.0 < mc <= 5_250_000.0:
+        return (
+            False,
+            f"ZONA MERAH PLAFON $3M-$5M (${mc:,.0f}): Area rawan shakeout early whale. Tunggu konfirmasi ekspansi > $5.25M!",
+            {}
+        )
+
+    # ZONA MERAH 6: Area Late-Stage > $8.80M (Kawal via Moonbag, jangan buka posisi baru mepet $10M+)
+    if mc > 8_800_000.0:
+        return (
+            False,
+            f"ZONA PUCUK LATE-STAGE (${mc:,.0f} > $8.8M): Jangan kejar entry baru di dekat $10M+, kawal via Moonbag!",
             {}
         )
 
@@ -316,6 +332,7 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             "corridor_name": "Lorong 0: Early Ignition (Sebelum Tembok $100k)",
             "corridor_max_mc": 78_000.0,
             "min_liq": 10_500.0,
+            "min_liq_ratio": 11.5,
             "min_turnover_h1": 0.55,
             "mature_turnover_h1": 0.32,
             "min_cum_tx": 160,
@@ -332,6 +349,7 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             "corridor_name": "Lorong 1: Breakout Tembok $100k -> Menuju $190k",
             "corridor_max_mc": 168_000.0,
             "min_liq": 18_000.0,
+            "min_liq_ratio": 11.5,
             "min_turnover_h1": 0.75,
             "mature_turnover_h1": 0.22,
             "min_cum_tx": 420,
@@ -348,6 +366,7 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             "corridor_name": "Lorong 2: Lolos Ujian $200k -> Ruang Terbang ke $400k+",
             "corridor_max_mc": 315_000.0,
             "min_liq": 26_000.0,
+            "min_liq_ratio": 11.5,
             "min_turnover_h1": 0.85,
             "mature_turnover_h1": 0.14,
             "min_cum_tx": 900,
@@ -357,18 +376,53 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
         }
 
     # LORONG 3 (WHALE CORRIDOR): Jebol Tembok $500k ($525k - $650k) -> Magnet $1M (Keluar di $825k)
-    tp_mc = min(825_000.0, mc * 1.38)
-    return True, "LORONG 3 (Whale Breakout > $525k)", {
-        "corridor_id": 3,
-        "corridor_name": "Lorong 3: Jebol Setengah Juta -> Front-Run $825k",
-        "corridor_max_mc": 650_000.0,
-        "min_liq": 48_000.0,
-        "min_turnover_h1": 0.70,
-        "mature_turnover_h1": 0.09,
-        "min_cum_tx": 1800,
-        "min_avg_ticket": 30.0,
+    if 525_000.0 < mc <= 650_000.0:
+        tp_mc = min(825_000.0, mc * 1.38)
+        return True, "LORONG 3 (Whale Breakout > $525k)", {
+            "corridor_id": 3,
+            "corridor_name": "Lorong 3: Jebol Setengah Juta -> Front-Run $825k",
+            "corridor_max_mc": 650_000.0,
+            "min_liq": 48_000.0,
+            "min_liq_ratio": 8.5,
+            "min_turnover_h1": 0.70,
+            "mature_turnover_h1": 0.09,
+            "min_cum_tx": 1800,
+            "min_avg_ticket": 30.0,
+            "target_tp_mc": tp_mc,
+            "cut_loss_pct": 13.5
+        }
+
+    # LORONG 4 (POST-$1M CULT IGNITION — $PONS / $STONK EARLY SUPER-RUNNER): $1.08M - $2.65M -> $4.2M + Moonbag $50M+
+    if 1_080_000.0 < mc <= 2_650_000.0:
+        tp_mc = min(4_200_000.0, mc * 1.48)
+        return True, "LORONG 4 (Post-$1M Cult Ignition)", {
+            "corridor_id": 4,
+            "corridor_name": "Lorong 4: Jebol Sakral $1 Juta -> Cult Ignition ($4.2M + Moonbag $50M+)",
+            "corridor_max_mc": 2_650_000.0,
+            "min_liq": 85_000.0,
+            "min_liq_ratio": 5.2,
+            "min_turnover_h1": 0.28,
+            "mature_turnover_h1": 0.055,
+            "min_cum_tx": 2600,
+            "min_avg_ticket": 38.0,
+            "target_tp_mc": tp_mc,
+            "cut_loss_pct": 12.5
+        }
+
+    # LORONG 5 (MEGA-CULT TIER-1 EXPANSION — $5.25M - $8.80M): Terbang Menuju $14M - $50M+
+    tp_mc = min(13_800_000.0, mc * 1.46)
+    return True, "LORONG 5 (Mega-Cult Tier-1 > $5.25M)", {
+        "corridor_id": 5,
+        "corridor_name": "Lorong 5: Mega-Cult Tier-1 (> $5.25M) -> Ekspansi $14M-$50M+",
+        "corridor_max_mc": 8_800_000.0,
+        "min_liq": 210_000.0,
+        "min_liq_ratio": 3.4,
+        "min_turnover_h1": 0.16,
+        "mature_turnover_h1": 0.035,
+        "min_cum_tx": 4000,
+        "min_avg_ticket": 52.0,
         "target_tp_mc": tp_mc,
-        "cut_loss_pct": 13.5
+        "cut_loss_pct": 12.0
     }
 
 
@@ -389,7 +443,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         return False, f"Tangki likuiditas kurang untuk {c_cfg['corridor_name']} (${liq:,.0f} < ${min_liq:,.0f})", {}
 
     liq_mc_ratio = (liq / max(1.0, mc)) * 100.0
-    min_liq_ratio = 8.5 if c_cfg["corridor_id"] == 3 else 11.5
+    min_liq_ratio = float(c_cfg.get("min_liq_ratio", 8.5 if c_cfg["corridor_id"] == 3 else 11.5))
     if liq_mc_ratio < min_liq_ratio:
         return False, f"Kolam LP terlalu tipis terhadap MC ({liq_mc_ratio:.1f}% < {min_liq_ratio}%)", {}
 
@@ -409,26 +463,27 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     vol_h1 = float(volumes.get("h1", 0.0) or 0.0)
 
     # 3. Usia Pair: Lolos Jito Bundle Block-0 (>= 3.5m), Batas Ketat 24j/36j di Lorong 0 (Anti Zombie Micro-Cap),
-    #    & Jalur CTO / Multi-Day Accumulation Breakout (> 1 Hari s/d 45 Hari) di Lorong 1, 2, & 3 ($Macca Guard)!
+    #    & Jalur CTO / Cult Multi-Hari (> 1 Hari s/d 60 Hari) di Lorong 1 s/d 5 ($Macca / $PONS / $STONK Guard)!
     pair_created_at_ms = best_pair.get("pairCreatedAt")
     now_ms = time.time() * 1000.0
     is_cto_multi_day_breakout = False
+    is_mega_corridor = c_cfg["corridor_id"] in (4, 5)
     if pair_created_at_ms:
         age_minutes = (now_ms - float(pair_created_at_ms)) / 60000.0
         if age_minutes < 3.5:
             return False, f"Terlalu baru ({age_minutes:.1f}m < 3.5m): Fase rawan MEV bundle block-0", {}
-        cto_liq_req = {1: 28_000.0, 2: 40_000.0, 3: 48_000.0}.get(c_cfg["corridor_id"], 999_999.0)
-        cto_vol_h1_req = 25_000.0 if c_cfg["corridor_id"] == 1 else 35_000.0
-        cto_tx24_req = {1: 650, 2: 900, 3: 1100}.get(c_cfg["corridor_id"], 99_999)
+        cto_liq_req = {1: 28_000.0, 2: 40_000.0, 3: 48_000.0, 4: 85_000.0, 5: 210_000.0}.get(c_cfg["corridor_id"], 999_999.0)
+        cto_vol_h1_req = {1: 25_000.0, 2: 35_000.0, 3: 35_000.0, 4: 85_000.0, 5: 180_000.0}.get(c_cfg["corridor_id"], 999_999.0)
+        cto_tx24_req = {1: 650, 2: 900, 3: 1100, 4: 1600, 5: 2400}.get(c_cfg["corridor_id"], 99_999)
         is_cto_multi_day_breakout = (
             age_minutes > 1440.0
-            and c_cfg["corridor_id"] in (1, 2, 3)
+            and c_cfg["corridor_id"] in (1, 2, 3, 4, 5)
             and liq >= max(cto_liq_req, c_cfg["min_liq"])
             and vol_h1 >= cto_vol_h1_req
             and cum_tx_24h >= cto_tx24_req
         )
         if is_cto_multi_day_breakout:
-            max_age_mins = 64_800.0  # Hingga 45 hari khusus CTO/akumulasi berlikuiditas tebal di Lorong 1, 2, & 3
+            max_age_mins = 86_400.0 if is_mega_corridor else 64_800.0  # 60 hari untuk Cult $1M+ (Lorong 4-5), 45 hari untuk Lorong 1-3
         elif cum_tx_24h >= 5000 and liq >= 30_000.0:
             max_age_mins = 2160.0    # 36 jam
         else:
@@ -438,7 +493,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     else:
         age_minutes = 12.0
 
-    # 4. Temperatur Candle Anti-Pucuk & Anti Dead-Cat Bounce (Adaptif untuk Steady Climber & CTO Multi-Hari)
+    # 4. Temperatur Candle Anti-Pucuk & Anti Dead-Cat Bounce (Adaptif untuk Steady Climber, CTO, & Cult $1M+)
     price_change = best_pair.get("priceChange") or {}
     p_m5 = float(price_change.get("m5", 0.0) or 0.0)
     p_h1 = float(price_change.get("h1", 0.0) or 0.0)
@@ -447,17 +502,22 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     is_proven_climber = (
         (
             age_minutes >= 45.0
-            and cum_tx_24h >= max(2500, c_cfg["min_cum_tx"] * 2)
-            and p_h1 >= 15.0
-            and p_h6 >= 20.0
+            and cum_tx_24h >= max(2500, c_cfg["min_cum_tx"] * (1.2 if is_mega_corridor else 2.0))
+            and p_h1 >= (14.0 if is_mega_corridor else 15.0)
+            and p_h6 >= (15.0 if is_mega_corridor else 20.0)
         )
         or (
             is_cto_multi_day_breakout
-            and p_h1 >= 15.0
+            and p_h1 >= (14.0 if is_mega_corridor else 15.0)
             and p_h6 >= 12.0
         )
     )
-    min_p_m5 = 5.0 if is_proven_climber else 6.0
+    if is_proven_climber and is_mega_corridor:
+        min_p_m5 = 4.0
+    elif is_proven_climber:
+        min_p_m5 = 5.0
+    else:
+        min_p_m5 = 6.0
 
     if p_m5 < min_p_m5:
         return False, f"Momentum 5m belum menginjak gas ({p_m5:+.1f}% < +{min_p_m5:.1f}%) - Tunggu dorongan naik", {}
@@ -475,7 +535,11 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         )
 
     # 5. PENANGKAL DEV LICIK #1: Kepadatan Transaksi (Anti Bundled Ghost Pump; adaptif untuk rolling 24j CTO > 1 hari)
-    effective_min_cum_tx = {1: 650, 2: 900, 3: 1100}.get(c_cfg["corridor_id"], c_cfg["min_cum_tx"]) if is_cto_multi_day_breakout else c_cfg["min_cum_tx"]
+    effective_min_cum_tx = (
+        {1: 650, 2: 900, 3: 1100, 4: 1600, 5: 2400}.get(c_cfg["corridor_id"], c_cfg["min_cum_tx"])
+        if is_cto_multi_day_breakout
+        else c_cfg["min_cum_tx"]
+    )
     if cum_tx_24h < effective_min_cum_tx:
         return (
             False,
@@ -483,7 +547,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             {}
         )
 
-    # 6. Dominasi Pembeli Nyata & Kesehatan Orderflow 1 Jam (Kalibrasi MEV Arbitrase pada Pool Ramai)
+    # 6. Dominasi Pembeli Nyata & Kesehatan Orderflow 1 Jam (Kalibrasi MEV Arbitrase pada Pool Ramai & Pool Cult $1M+)
     if total_m5 < 25 or sells_m5 >= buys_m5:
         return False, f"Partisipasi pembeli lemah ({buys_m5}B / {sells_m5}S)", {}
 
@@ -493,13 +557,13 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         return False, f"Distribusi H1 berat: Penjual mendominasi 1 jam terakhir (Rasio H1 {buy_sell_ratio_h1:.2f}x)", {}
 
     high_tx_organic_flow = (
-        total_m5 >= 80
+        total_m5 >= (60 if is_mega_corridor else 80)
         and is_proven_climber
-        and buy_sell_ratio_h1 >= 1.18
+        and buy_sell_ratio_h1 >= (1.12 if is_mega_corridor else 1.18)
     )
-    min_bs_m5 = 1.35 if high_tx_organic_flow else 1.85
-    min_cvd = 15.0 if high_tx_organic_flow else 29.8
-    h1_decay_floor = 0.82 if high_tx_organic_flow else 0.90
+    min_bs_m5 = (1.30 if is_mega_corridor else 1.35) if high_tx_organic_flow else 1.85
+    min_cvd = (13.0 if is_mega_corridor else 15.0) if high_tx_organic_flow else 29.8
+    h1_decay_floor = (0.80 if is_mega_corridor else 0.82) if high_tx_organic_flow else 0.90
 
     if buy_sell_ratio_m5 < min_bs_m5:
         return False, f"Rasio Buy/Sell kurang dominan ({buy_sell_ratio_m5:.2f}x < {min_bs_m5:.2f}x)", {}
@@ -833,7 +897,13 @@ def analyze_holders_and_lp_lock(
     if max_single_pure > 4.6:
         return False, f"Paus Tunggal Bahaya: 1 pure holder menguasai {max_single_pure:.1f}% (> 4.6%)", {}
 
-    # Validasi Khusus Koin Multi-Hari / CTO (> 36 Jam): Wajib Dev Bersih <= 1.0% & Basis Holder Komunitas >= 600 (C1) / >= 800 (C2-C3)
+    # Validasi Khusus Koin Multi-Hari / CTO (> 36 Jam) & Cult Mega-Runner (> $1.08M):
+    if mc_usd >= 1_080_000.0 and creator_pct > 1.5:
+        return (
+            False,
+            f"Koin Mega-Cap (${mc_usd:,.0f}) tapi Dev masih memegang {creator_pct:.1f}% (> 1.5%) -> Rawan dev dump besar!",
+            {}
+        )
     if age_minutes > 2160.0:
         if creator_pct > 1.0:
             return (
@@ -849,7 +919,7 @@ def analyze_holders_and_lp_lock(
                 {}
             )
 
-    # Kalibrasi V2.5 Pool-Depletion-Aware Pareto Ceiling ($Macca Guard):
+    # Kalibrasi V2.5/V2.6 Pool-Depletion-Aware Pareto Ceiling ($Macca / $PONS / $STONK Guard):
     # Saat pool AMM menyusut ke <20% (outside_pool >= 80%) pada koin komunitas besar (>=1.000 holders,
     # dev <=1%, 0 insider, tanpa paus >4.0%), Top 10 pure 23.5% setara hanya ~25.5% suplai beredar di luar pool.
     is_broad_community_depletion = (
@@ -863,13 +933,22 @@ def analyze_holders_and_lp_lock(
     if top10_pure_pct > max_top10_pure:
         return False, f"Top 10 Pure Holders terlalu pekat ({top10_pure_pct:.1f}% > {max_top10_pure:.1f}%)", {}
 
-    # 6. PENANGKAL DEV LICIK #5 (V2.4): Verifikasi Jumlah Partisipan Nyata & Anti Botnet Nano-Swarm (< Top-20)
+    # 6. PENANGKAL DEV LICIK #5 (V2.4 + V2.6 Anti-Fake-FDV): Verifikasi Jumlah Partisipan Nyata & Anti Botnet Nano-Swarm
     if total_holders > 0 and mc_usd >= 25_000.0:
-        min_holders_req = 150 if mc_usd >= 228_000.0 else (90 if mc_usd >= 128_000.0 else 45)
+        if mc_usd >= 5_250_000.0:
+            min_holders_req = 2200
+        elif mc_usd >= 1_080_000.0:
+            min_holders_req = 1200
+        elif mc_usd >= 228_000.0:
+            min_holders_req = 150
+        elif mc_usd >= 128_000.0:
+            min_holders_req = 90
+        else:
+            min_holders_req = 45
         if total_holders < min_holders_req:
             return (
                 False,
-                f"Partisipan holder terlalu tipis untuk MC ${mc_usd:,.0f} ({total_holders} < {min_holders_req} holders) -> Pump segelintir dompet!",
+                f"Partisipan holder terlalu tipis untuk MC ${mc_usd:,.0f} ({total_holders} < {min_holders_req} holders) -> Fake FDV / Pump segelintir dompet!",
                 {}
             )
 
@@ -1044,6 +1123,13 @@ def audit_and_dispatch_candidate(
             "verdict": "SKIP",
             "reason": f"Friksi pulang-pergi 0.1 SOL terlalu mahal ({rt_loss_pct:.2f}% > {MAX_ROUNDTRIP_LOSS_PCT}%) - Kolam timpang/licin!"
         }
+    if int(metrics.get("corridor_id", 0)) >= 4 and depth_loss_pct > 6.5:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": f"Koin >$1M tapi kedalaman 1.0 SOL tipis (amblas {depth_loss_pct:.1f}% > 6.5%) -> Jebakan Fake-FDV LP semu!"
+        }
 
     # 4. DETEKSI LAG DEXSCREENER VS HARGA SPOT REAL-TIME SLOT SOLANA DETIK INI!
     # Hanya bandingkan pool WSOL jika likuiditasnya representatif (>= $8k & >= 25% pool utama) agar tidak tertipu pool debu
@@ -1115,9 +1201,14 @@ def audit_and_dispatch_candidate(
 
     safe_name = _esc_md(name)
     safe_symbol = _esc_md(symbol)
+    moonbag_note = (
+        f"🌕 *Strategi Cult Mega-Runner ($10M-$50M+):* Ambil `70%` modal+untung di `${tp_mc:,.0f}` & biarkan `30% Free Moonbag` kawal terbang ke `$20M-$50M+`!\n"
+        if int(metrics.get("corridor_id", 0)) >= 4
+        else ""
+    )
 
     alert_msg = (
-        f"🎯 *[CORRIDOR SNIPER V2.4: ANTI-BOTNET & DEPTH VERIFIED]*\n\n"
+        f"🎯 *[CORRIDOR SNIPER V2.6: CULT RUNNER & ANTI-BOTNET]*\n\n"
         f"🪙 *Token:* {safe_name} (`${safe_symbol}`)\n"
         f"📍 *Mint:* `{mint}`\n"
         f"🛤️ *Posisi:* `{metrics['corridor_name']}`\n\n"
@@ -1125,6 +1216,7 @@ def audit_and_dispatch_candidate(
         f"⏱️ *Est. MC Saat Anda Klik (~{int(PIPELINE_REACTION_DELAY_SEC)}d):* `${projected_entry_mc:,.0f}`\n"
         f"🚧 *BATAS MAKSIMAL BOLEH BELI:* `${max_safe_entry_mc:,.0f}` *(Lewat ini = JANGAN BELI!)*\n"
         f"🎯 *Target Take-Profit Aman:* `${tp_mc:,.0f}` *(Est. Untung Bersih +{net_from_projected_pct}%)*\n"
+        f"{moonbag_note}"
         f"🛑 *Hard Stop-Loss:* `-{cut_loss}%` *(Wajib pasang otomatis)*\n\n"
         f"🔄 *Uji Jual 0.1 & 1.0 SOL:* `LOLOS` (Friksi `{rt_loss_pct}%` | Depth 1 SOL `{depth_loss_pct}%`)\n"
         f"⚡ *Nafas Baru:* 5m `+{metrics['price_change_m5']}%` | Akselerasi `{metrics['accel_ratio']}x` | Turnover 1h `{metrics['turnover_h1']}x`\n"
@@ -1221,15 +1313,15 @@ def _extract_gt_solana_mints(gt_payload) -> list:
 
 def run_live_market_scan(engine, config) -> dict:
     """
-    FAST-TIME BATCH MULTI-FEED SCANNER V2.5 (50 KANDIDAT PARALEL < 1.5 - 2.2 DETIK):
+    FAST-TIME BATCH MULTI-FEED SCANNER V2.6 (50 KANDIDAT PARALEL < 1.5 - 2.2 DETIK):
     1. Tarik paralel 6 radar (GeckoTerminal Trending 5m & 1h ~70ms + Organic PumpSwap + DexScreener Boosts/Profiles)
-       sehingga koin organik murni TANPA iklan Boost & breakout multi-hari ($Macca) langsung tertangkap!
+       sehingga koin organik murni TANPA iklan Boost, CTO multi-hari ($Macca), & Cult Mega-Runner $1M->$50M+ ($PONS/$STONK) langsung tertangkap!
     2. Ambil data pair seluruh kandidat dalam chunk paralel <=30 mint (~250ms total, 0ms penalti sekuensial!).
-    3. Saring di RAM (< 1ms) dengan Corridor + Anti-Pucuk + CTO Multi-Day Guard + Proyeksi Delay 22s.
+    3. Saring di RAM (< 1ms) dengan Lorong 0-5 + Anti-Pucuk + CTO/Cult Guard + Proyeksi Delay 22s.
     4. Hanya kandidat elit yang lolos disimulasikan paralel ke RugCheck & Round-Trip Jupiter (0.1 + 1.0 SOL)!
     """
     t0 = time.time()
-    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V2.5 Multi-Feed Delay-Compensated Scan...", flush=True)
+    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V2.6 Multi-Feed Delay-Compensated Scan...", flush=True)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as feed_exec:
         f_gt_5m = feed_exec.submit(
@@ -1257,14 +1349,14 @@ def run_live_market_scan(engine, config) -> dict:
     ordered_mints.extend(_extract_gt_solana_mints(gt_5m))
     ordered_mints.extend(_extract_gt_solana_mints(gt_1h))
 
-    # 2. Koin organik PumpSwap di rentang Lorong ($25k-$650k)
+    # 2. Koin organik PumpSwap di rentang Lorong ($25k-$8.8M termasuk Cult Runner >$1M)
     if isinstance(organic_search, dict):
         for op in (organic_search.get("pairs") or []):
             if op.get("chainId") == "solana":
                 op_mc = float(op.get("marketCap") or op.get("fdv") or 0.0)
                 op_vol5 = float((op.get("volume") or {}).get("m5") or 0.0)
                 op_addr = (op.get("baseToken") or {}).get("address")
-                if op_addr and 25_000.0 <= op_mc <= 650_000.0 and op_vol5 >= 1500.0:
+                if op_addr and 25_000.0 <= op_mc <= 8_800_000.0 and op_vol5 >= 1500.0:
                     ordered_mints.append(op_addr)
 
     for feed in (boosts_latest, boosts_top):
@@ -1446,7 +1538,7 @@ class handler(BaseHTTPRequestHandler):
             chat_id = getattr(config, "TELEGRAM_CHAT_ID", None) or os.getenv("TELEGRAM_CHAT_ID")
             ledger = _load_corridor_ledger()
             response_data = {
-                "service": "Corridor Sniper V2.4 — Anti-Botnet & Depth-Verified",
+                "service": "Corridor Sniper V2.6 — Cult Mega-Runner ($1M->$50M+), CTO & Anti-Botnet",
                 "status": "healthy",
                 "python_version": sys.version.split()[0],
                 "engine_loaded": engine is not None,
@@ -1577,7 +1669,7 @@ class handler(BaseHTTPRequestHandler):
         elif action == "scan" or is_cron:
             scan_summary = run_live_market_scan(engine, config)
             response_data = {
-                "service": "Corridor Sniper V2.4 — Anti-Botnet, Nano-Swarm & Depth-Verified Radar",
+                "service": "Corridor Sniper V2.6 — Cult Mega-Runner ($1M->$50M+), Multi-Day CTO & Anti-Botnet Radar",
                 "status": "ready",
                 "is_cron_call": is_cron,
                 "timestamp": time.time(),
@@ -1589,15 +1681,20 @@ class handler(BaseHTTPRequestHandler):
                     "deadzone_2_blocked": "$168k - $228k (Kuburan Dev Receh $200k DIBLOKIR)",
                     "corridor_2_golden": "$228k - $315k -> TP <= $418k (Ruang Kosong Menuju $400k+)",
                     "deadzone_3_blocked": "$315k - $525k (Tembok $450k-$500k DIBLOKIR)",
-                    "corridor_3_whale": "$525k - $650k -> TP <= $825k (Front-run tembok $1M)"
+                    "corridor_3_whale": "$525k - $650k -> TP <= $825k (Front-run tembok $1M)",
+                    "deadzone_4_blocked": "$650k - $1.08M (Tembok Sakral $1 Juta DIBLOKIR)",
+                    "corridor_4_cult_ignition": "$1.08M - $2.65M -> TP <= $4.2M + 30% Moonbag $50M+ ($PONS/$STONK Ignition)",
+                    "deadzone_5_blocked": "$2.65M - $5.25M (Tembok Shakeout $3M-$5M DIBLOKIR)",
+                    "corridor_5_mega_cult": "$5.25M - $8.80M -> TP <= $13.8M + 30% Moonbag $50M+ (Tier-1 Cult Expansion)",
+                    "deadzone_6_blocked": "> $8.80M (Area Late-Stage Dekat $10M+ DIBLOKIR, Kawal via Moonbag)"
                 },
                 "execution_and_delay_shields": [
-                    "Batch 30-Mint Single-Shot + PumpSwap Organic Discovery (~0.35-1.2 detik)",
-                    "22-Second Forward Delay Projection + Hard MAX ENTRY MC Guard di Telegram",
+                    "6-Feed Parallel Discovery (GT 5m/1h Tanpa Boost + PumpSwap + Boosts) 50-Mint (~0.9-1.8 detik)",
+                    "22-Second Forward Delay Projection + Hard MAX ENTRY MC Guard + 70/30 Moonbag Strategy",
+                    "Post-$1M Cult Corridors (Lorong 4 & 5) dengan Anti-Fake-FDV (>=1.2k/2.2k Holders, Dev <=1.5%, 1 SOL Depth <=6.5%)",
                     "Anti-Nano-Swarm Pareto Floor & Anti-Decoy Whale (Blokir 3.000+ dompet bot < Top-20)",
                     "H1 Botnet Hyper-Frequency & Micro-Ticket Guard + Anti-Churn Distribution Trap",
-                    "Parallel 0.1 SOL + 1.0 SOL Jupiter Round-Trip & DLMM Hollow-Bin Cliff Check (0ms extra lag)",
-                    "On-Chain Mint/Freeze/Token-2022 Tax Block + Dev Balance <= 2.5% + Hard-SOL LP >= 32%"
+                    "Parallel 0.1 SOL + 1.0 SOL Jupiter Round-Trip & DLMM Hollow-Bin Cliff Check (0ms extra lag)"
                 ]
             }
 
