@@ -57,7 +57,7 @@ class FomoConfig:
     PIPELINE_REACTION_DELAY_SEC: float = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", "22.0"))
     MAX_ROUNDTRIP_LOSS_PCT: float = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", "5.5"))
     MIN_NET_PROFIT_AFTER_DELAY_PCT: float = float(os.getenv("MIN_NET_PROFIT_AFTER_DELAY_PCT", "18.0"))
-    BATCH_CANDIDATE_LIMIT: int = int(os.getenv("BATCH_CANDIDATE_LIMIT", "50"))
+    BATCH_CANDIDATE_LIMIT: int = int(os.getenv("BATCH_CANDIDATE_LIMIT", "60"))
     ALERT_COOLDOWN_SEC: int = int(os.getenv("ALERT_COOLDOWN_SEC", "2700"))  # 45 menit per lorong
 
     # On-Chain Safety Guard via Solana RPC
