@@ -56,7 +56,7 @@ PIPELINE_REACTION_DELAY_SEC = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", get
 PRIORITY_TIP_BUFFER_PCT = 1.0            # Buffer priority fee / Jito tip saat eksekusi nyata
 MAX_ROUNDTRIP_LOSS_PCT = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", getattr(config, "MAX_ROUNDTRIP_LOSS_PCT", 5.5)))
 MIN_NET_PROFIT_AFTER_DELAY_PCT = float(os.getenv("MIN_NET_PROFIT_AFTER_DELAY_PCT", getattr(config, "MIN_NET_PROFIT_AFTER_DELAY_PCT", 18.0)))
-BATCH_CANDIDATE_LIMIT = min(30, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 30))))
+BATCH_CANDIDATE_LIMIT = min(60, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 50))))
 ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC", getattr(config, "ALERT_COOLDOWN_SEC", 2700)))  # Cooldown 45m per lorong
 
 
@@ -146,7 +146,7 @@ def send_telegram_direct(token: str, chat_id: str, text: str) -> tuple[bool, str
 
 
 def fetch_json(url: str, timeout: float = 3.2, retries: int = 1):
-    """Utility fetch JSON cepat dengan 1x retry otomatis pada gangguan transien / HTTP 429 & 5xx."""
+    """Utility fetch JSON cepat dengan retry adaptif pada gangguan transien / burst HTTP 429 & 5xx."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
@@ -158,7 +158,8 @@ def fetch_json(url: str, timeout: float = 3.2, retries: int = 1):
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as http_err:
             if http_err.code in (429, 500, 502, 503, 504) and attempt < retries:
-                time.sleep(0.12)
+                backoff = (0.18 * (attempt + 1)) if http_err.code == 429 else 0.12
+                time.sleep(backoff)
                 continue
             return None
         except Exception:
@@ -170,19 +171,19 @@ def fetch_json(url: str, timeout: float = 3.2, retries: int = 1):
 
 
 def _fetch_jup_single_quote(input_mint: str, output_mint: str, amount: int, timeout: float = 2.6):
-    """Ambil quote swap di Jupiter V1 Lite API (real-time slot Solana) dengan fallback v6."""
+    """Ambil quote swap di Jupiter V1 Lite API (real-time slot Solana) dengan anti-429 burst & fallback v6."""
     primary_url = (
         f"https://lite-api.jup.ag/swap/v1/quote"
         f"?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&slippageBps=200"
     )
-    data = fetch_json(primary_url, timeout=timeout)
+    data = fetch_json(primary_url, timeout=timeout, retries=2)
     if isinstance(data, dict) and data.get("routePlan") is not None and data.get("outAmount"):
         return data
     fallback_url = (
         f"https://quote-api.jup.ag/v6/quote"
         f"?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&slippageBps=200"
     )
-    data_fb = fetch_json(fallback_url, timeout=1.8)
+    data_fb = fetch_json(fallback_url, timeout=1.8, retries=1)
     if isinstance(data_fb, dict) and data_fb.get("routePlan") is not None and data_fb.get("outAmount"):
         return data_fb
     return None
@@ -407,30 +408,54 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     vol_m5 = float(volumes.get("m5", 0.0) or 0.0)
     vol_h1 = float(volumes.get("h1", 0.0) or 0.0)
 
-    # 3. Usia Pair: Lolos Jito Bundle Block-0 (>= 3.5m) & Batas Koin Aktif (24j, atau 36j jika organik ramai)
+    # 3. Usia Pair: Lolos Jito Bundle Block-0 (>= 3.5m), Batas Ketat 24j/36j di Lorong 0 (Anti Zombie Micro-Cap),
+    #    & Jalur CTO / Multi-Day Accumulation Breakout (> 1 Hari s/d 45 Hari) di Lorong 1, 2, & 3 ($Macca Guard)!
     pair_created_at_ms = best_pair.get("pairCreatedAt")
     now_ms = time.time() * 1000.0
+    is_cto_multi_day_breakout = False
     if pair_created_at_ms:
         age_minutes = (now_ms - float(pair_created_at_ms)) / 60000.0
         if age_minutes < 3.5:
             return False, f"Terlalu baru ({age_minutes:.1f}m < 3.5m): Fase rawan MEV bundle block-0", {}
-        max_age_mins = 2160.0 if (cum_tx_24h >= 5000 and liq >= 30_000.0) else 1440.0
+        cto_liq_req = {1: 28_000.0, 2: 40_000.0, 3: 48_000.0}.get(c_cfg["corridor_id"], 999_999.0)
+        cto_vol_h1_req = 25_000.0 if c_cfg["corridor_id"] == 1 else 35_000.0
+        cto_tx24_req = {1: 650, 2: 900, 3: 1100}.get(c_cfg["corridor_id"], 99_999)
+        is_cto_multi_day_breakout = (
+            age_minutes > 1440.0
+            and c_cfg["corridor_id"] in (1, 2, 3)
+            and liq >= max(cto_liq_req, c_cfg["min_liq"])
+            and vol_h1 >= cto_vol_h1_req
+            and cum_tx_24h >= cto_tx24_req
+        )
+        if is_cto_multi_day_breakout:
+            max_age_mins = 64_800.0  # Hingga 45 hari khusus CTO/akumulasi berlikuiditas tebal di Lorong 1, 2, & 3
+        elif cum_tx_24h >= 5000 and liq >= 30_000.0:
+            max_age_mins = 2160.0    # 36 jam
+        else:
+            max_age_mins = 1440.0    # 24 jam standar (blokir mutlak zombie pump micro-cap Lorong 0)
         if age_minutes > max_age_mins:
             return False, f"Koin lama ({age_minutes/60.0:.1f} jam > {max_age_mins/60.0:.0f}j): Rawan jebakan re-pump koin mati", {}
     else:
         age_minutes = 12.0
 
-    # 4. Temperatur Candle Anti-Pucuk & Anti Dead-Cat Bounce (Adaptif untuk Steady Climber Organik)
+    # 4. Temperatur Candle Anti-Pucuk & Anti Dead-Cat Bounce (Adaptif untuk Steady Climber & CTO Multi-Hari)
     price_change = best_pair.get("priceChange") or {}
     p_m5 = float(price_change.get("m5", 0.0) or 0.0)
     p_h1 = float(price_change.get("h1", 0.0) or 0.0)
     p_h6 = float(price_change.get("h6", 0.0) or 0.0)
 
     is_proven_climber = (
-        age_minutes >= 45.0
-        and cum_tx_24h >= max(2500, c_cfg["min_cum_tx"] * 2)
-        and p_h1 >= 15.0
-        and p_h6 >= 20.0
+        (
+            age_minutes >= 45.0
+            and cum_tx_24h >= max(2500, c_cfg["min_cum_tx"] * 2)
+            and p_h1 >= 15.0
+            and p_h6 >= 20.0
+        )
+        or (
+            is_cto_multi_day_breakout
+            and p_h1 >= 15.0
+            and p_h6 >= 12.0
+        )
     )
     min_p_m5 = 5.0 if is_proven_climber else 6.0
 
@@ -449,11 +474,12 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             {}
         )
 
-    # 5. PENANGKAL DEV LICIK #1: Kepadatan Transaksi Seumur Hidup (Anti Bundled Ghost Pump)
-    if cum_tx_24h < c_cfg["min_cum_tx"]:
+    # 5. PENANGKAL DEV LICIK #1: Kepadatan Transaksi (Anti Bundled Ghost Pump; adaptif untuk rolling 24j CTO > 1 hari)
+    effective_min_cum_tx = {1: 650, 2: 900, 3: 1100}.get(c_cfg["corridor_id"], c_cfg["min_cum_tx"]) if is_cto_multi_day_breakout else c_cfg["min_cum_tx"]
+    if cum_tx_24h < effective_min_cum_tx:
         return (
             False,
-            f"Jebakan Ghost-Pump Dev: MC ${mc:,.0f} tapi total transaksi baru {cum_tx_24h} (< {c_cfg['min_cum_tx']} tx)",
+            f"Jebakan Ghost-Pump Dev: MC ${mc:,.0f} tapi total transaksi baru {cum_tx_24h} (< {effective_min_cum_tx} tx)",
             {}
         )
 
@@ -696,7 +722,15 @@ def analyze_holders_and_lp_lock(
         return False, "Data Top Holders RugCheck belum tersedia (Fail-Closed)", {}
 
     markets = rug_data.get("markets") or []
+    known_accounts = rug_data.get("knownAccounts") or {}
     market_vaults = set()
+    if isinstance(known_accounts, dict):
+        for k_addr, k_meta in known_accounts.items():
+            if isinstance(k_meta, dict):
+                k_type = str(k_meta.get("type") or "").strip().lower()
+                if k_type in {"amm", "locker", "clob", "burn", "vault"}:
+                    market_vaults.add(str(k_addr).lower())
+
     total_locked_usd = 0.0
     total_unlocked_usd = 0.0
     primary_lp_locked_pct = 100.0
@@ -724,9 +758,11 @@ def analyze_holders_and_lp_lock(
 
         if idx == 0 and pool_usd > 2500.0:
             hard_usd = 0.0
-            if str(lp.get("baseMint") or "") in HARD_QUOTE_MINTS:
+            base_m = str(lp.get("baseMint") or m.get("mintA") or "")
+            quote_m = str(lp.get("quoteMint") or m.get("mintB") or "")
+            if base_m in HARD_QUOTE_MINTS:
                 hard_usd = base_usd
-            elif str(lp.get("quoteMint") or "") in HARD_QUOTE_MINTS:
+            elif quote_m in HARD_QUOTE_MINTS:
                 hard_usd = quote_usd
             if hard_usd > 0.0:
                 sol_backing_ratio = round((hard_usd / pool_usd) * 100.0, 1)
@@ -758,7 +794,7 @@ def analyze_holders_and_lp_lock(
             {}
         )
 
-    # 5. Pemisahan Pool AMM (termasuk Vault Owner PumpSwap/Meteora) vs Pure Holders & Deteksi Sindikat Cabal
+    # 5. Pemisahan Pool AMM (termasuk Vault Owner PumpSwap/Meteora & knownAccounts Locker/AMM) vs Pure Holders
     norm_pair = (pair_address or "").lower()
     pool_holdings = []
     pure_holdings = []
@@ -787,7 +823,9 @@ def analyze_holders_and_lp_lock(
     max_single_pure = pure_holdings[0]["pct"] if pure_holdings else 0.0
     top10_pure_pct = sum(x["pct"] for x in pure_holdings[:10])
     pool_total_pct = sum(x["pct"] for x in pool_holdings)
+    outside_pool_pct = max(0.0, 100.0 - pool_total_pct)
     insider_count = sum(1 for x in pure_holdings[:15] if x.get("insider"))
+    total_holders = int(rug_data.get("totalHolders") or 0)
 
     if insider_count >= 2:
         return False, f"Terdeteksi {insider_count} dompet Insider/Bundler aktif di Top 15", {}
@@ -795,11 +833,37 @@ def analyze_holders_and_lp_lock(
     if max_single_pure > 4.6:
         return False, f"Paus Tunggal Bahaya: 1 pure holder menguasai {max_single_pure:.1f}% (> 4.6%)", {}
 
-    if top10_pure_pct > 19.5:
-        return False, f"Top 10 Pure Holders terlalu pekat ({top10_pure_pct:.1f}% > 19.5%)", {}
+    # Validasi Khusus Koin Multi-Hari / CTO (> 36 Jam): Wajib Dev Bersih <= 1.0% & Basis Holder Komunitas >= 600 (C1) / >= 800 (C2-C3)
+    if age_minutes > 2160.0:
+        if creator_pct > 1.0:
+            return (
+                False,
+                f"Koin multi-hari ({age_minutes/60.0:.0f}j) tapi Dev masih memegang {creator_pct:.1f}% (> 1.0%) -> Rawan dev dump!",
+                {}
+            )
+        min_cto_holders = 800 if mc_usd >= 228_000.0 else 600
+        if 0 < total_holders < min_cto_holders:
+            return (
+                False,
+                f"Koin lama ({age_minutes/60.0:.0f}j) dengan komunitas sempit ({total_holders} < {min_cto_holders} holders) -> Rawan jebakan zombie pump!",
+                {}
+            )
+
+    # Kalibrasi V2.5 Pool-Depletion-Aware Pareto Ceiling ($Macca Guard):
+    # Saat pool AMM menyusut ke <20% (outside_pool >= 80%) pada koin komunitas besar (>=1.000 holders,
+    # dev <=1%, 0 insider, tanpa paus >4.0%), Top 10 pure 23.5% setara hanya ~25.5% suplai beredar di luar pool.
+    is_broad_community_depletion = (
+        outside_pool_pct >= 80.0
+        and total_holders >= 1000
+        and creator_pct <= 1.0
+        and insider_count == 0
+        and max_single_pure <= 4.0
+    )
+    max_top10_pure = min(25.0, round(outside_pool_pct * 0.275, 1)) if is_broad_community_depletion else 19.5
+    if top10_pure_pct > max_top10_pure:
+        return False, f"Top 10 Pure Holders terlalu pekat ({top10_pure_pct:.1f}% > {max_top10_pure:.1f}%)", {}
 
     # 6. PENANGKAL DEV LICIK #5 (V2.4): Verifikasi Jumlah Partisipan Nyata & Anti Botnet Nano-Swarm (< Top-20)
-    total_holders = int(rug_data.get("totalHolders") or 0)
     if total_holders > 0 and mc_usd >= 25_000.0:
         min_holders_req = 150 if mc_usd >= 228_000.0 else (90 if mc_usd >= 128_000.0 else 45)
         if total_holders < min_holders_req:
@@ -812,7 +876,6 @@ def analyze_holders_and_lp_lock(
     # Hukum Konservasi Pareto (Pembunuh Mutlak Modus $Leonida 3.395 Dompet Bot Nano < 0.25%):
     # Jika >= 65% suplai berada di luar pool AMM, secara matematis mustahil pada pasar organik
     # 10 holder terbesar digabung hanya memegang < 5.2% (atau holder #1 < 0.65%).
-    outside_pool_pct = max(0.0, 100.0 - pool_total_pct)
     if outside_pool_pct >= 65.0 and (top10_pure_pct < 5.2 or max_single_pure < 0.65):
         return (
             False,
@@ -1113,7 +1176,12 @@ def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
     if not dex_data or not dex_data.get("pairs"):
         return {"mint": mint, "token": mint[:8], "verdict": "SKIP", "reason": "Data pair DexScreener kosong"}
 
-    sol_pairs = [p for p in dex_data.get("pairs", []) if p.get("chainId") == "solana"]
+    sol_pairs = [
+        p for p in dex_data.get("pairs", [])
+        if p.get("chainId") == "solana" and (p.get("baseToken") or {}).get("address") == mint
+    ]
+    if not sol_pairs:
+        sol_pairs = [p for p in dex_data.get("pairs", []) if p.get("chainId") == "solana"]
     if not sol_pairs:
         return {"mint": mint, "token": mint[:8], "verdict": "SKIP", "reason": "Bukan pair Solana"}
 
@@ -1136,31 +1204,60 @@ def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
     return audit_and_dispatch_candidate(mint, pairs, best_pair, metrics, config)
 
 
+def _extract_gt_solana_mints(gt_payload) -> list:
+    """Ekstrak mint address koin organik Solana dari GeckoTerminal trending_pools (5m / 1h)."""
+    out = []
+    if not isinstance(gt_payload, dict):
+        return out
+    for pool_item in (gt_payload.get("data") or []):
+        rel = ((pool_item.get("relationships") or {}).get("base_token") or {}).get("data") or {}
+        tok_id = str(rel.get("id") or "")
+        if tok_id.startswith("solana_"):
+            mint_addr = tok_id[7:].strip()
+            if mint_addr and mint_addr not in HARD_QUOTE_MINTS:
+                out.append(mint_addr)
+    return out
+
+
 def run_live_market_scan(engine, config) -> dict:
     """
-    FAST-TIME BATCH MULTI-FEED SCANNER (25 KOIN SEKALI TEMBAK < 1.5 DETIK):
-    1. Tarik paralel 3 radar DexScreener (Boosts Latest + Boosts Top + Profiles Latest).
-    2. Ambil data pair seluruh 25 kandidat sekaligus dalam 1 Batch HTTP Request!
-    3. Saring 25 koin di RAM (< 1ms) dengan Corridor + Anti-Pucuk + Proyeksi Delay 22s.
-    4. Hanya kandidat elit yang lolos disimulasikan paralel ke RugCheck & Round-Trip Jupiter!
+    FAST-TIME BATCH MULTI-FEED SCANNER V2.5 (50 KANDIDAT PARALEL < 1.5 - 2.2 DETIK):
+    1. Tarik paralel 6 radar (GeckoTerminal Trending 5m & 1h ~70ms + Organic PumpSwap + DexScreener Boosts/Profiles)
+       sehingga koin organik murni TANPA iklan Boost & breakout multi-hari ($Macca) langsung tertangkap!
+    2. Ambil data pair seluruh kandidat dalam chunk paralel <=30 mint (~250ms total, 0ms penalti sekuensial!).
+    3. Saring di RAM (< 1ms) dengan Corridor + Anti-Pucuk + CTO Multi-Day Guard + Proyeksi Delay 22s.
+    4. Hanya kandidat elit yang lolos disimulasikan paralel ke RugCheck & Round-Trip Jupiter (0.1 + 1.0 SOL)!
     """
     t0 = time.time()
-    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch 25-Mint Delay-Compensated Scan...", flush=True)
+    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V2.5 Multi-Feed Delay-Compensated Scan...", flush=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as feed_exec:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as feed_exec:
+        f_gt_5m = feed_exec.submit(
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1", 2.5
+        )
+        f_gt_1h = feed_exec.submit(
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1", 2.5
+        )
+        f_organic = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=pumpswap", 2.8)
         f_b_latest = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/latest/v1", 2.8)
         f_b_top = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/top/v1", 2.8)
         f_prof = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-profiles/latest/v1", 2.8)
-        f_organic = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=pumpswap", 2.8)
+
+        gt_5m = f_gt_5m.result()
+        gt_1h = f_gt_1h.result()
+        organic_search = f_organic.result()
         boosts_latest = f_b_latest.result()
         boosts_top = f_b_top.result()
         profiles = f_prof.result()
-        organic_search = f_organic.result()
 
     ordered_mints = []
     boost_map = {}
 
-    # Prioritaskan koin organik PumpSwap yang sedang aktif bergerak di rentang Lorong ($25k-$650k) meskipun tanpa iklan Boost!
+    # 1. Prioritaskan koin organik yang benar-benar meledak volume on-chain 5m & 1h (Tanpa perlu beli Boost!)
+    ordered_mints.extend(_extract_gt_solana_mints(gt_5m))
+    ordered_mints.extend(_extract_gt_solana_mints(gt_1h))
+
+    # 2. Koin organik PumpSwap di rentang Lorong ($25k-$650k)
     if isinstance(organic_search, dict):
         for op in (organic_search.get("pairs") or []):
             if op.get("chainId") == "solana":
@@ -1202,10 +1299,22 @@ def run_live_market_scan(engine, config) -> dict:
             "evaluations": []
         }
 
-    # SINGLE-SHOT BATCH REQUEST: Ambil seluruh 25 token hanya dalam 1 kali HTTP call (~250ms)!
-    batch_url = f"https://api.dexscreener.com/latest/dex/tokens/{','.join(candidate_mints)}"
-    batch_dex = fetch_json(batch_url, timeout=3.2)
-    all_pairs = (batch_dex or {}).get("pairs") or []
+    # PARALLEL CHUNKED BATCH REQUEST (<=30 mints per DexScreener call, dieksekusi paralel ~250ms total!)
+    chunks = [candidate_mints[i:i + 30] for i in range(0, len(candidate_mints), 30)]
+    all_pairs = []
+    if len(chunks) == 1:
+        batch_dex = fetch_json(f"https://api.dexscreener.com/latest/dex/tokens/{','.join(chunks[0])}", timeout=3.2)
+        all_pairs = (batch_dex or {}).get("pairs") or []
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(chunks)) as batch_exec:
+            batch_futures = [
+                batch_exec.submit(fetch_json, f"https://api.dexscreener.com/latest/dex/tokens/{','.join(ch)}", 3.2)
+                for ch in chunks
+            ]
+            for bf in batch_futures:
+                res_b = bf.result()
+                if isinstance(res_b, dict) and res_b.get("pairs"):
+                    all_pairs.extend(res_b["pairs"])
 
     pairs_by_mint = {}
     for p in all_pairs:
