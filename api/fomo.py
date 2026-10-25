@@ -56,7 +56,7 @@ PIPELINE_REACTION_DELAY_SEC = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", get
 PRIORITY_TIP_BUFFER_PCT = 1.0            # Buffer priority fee / Jito tip saat eksekusi nyata
 MAX_ROUNDTRIP_LOSS_PCT = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", getattr(config, "MAX_ROUNDTRIP_LOSS_PCT", 5.5)))
 MIN_NET_PROFIT_AFTER_DELAY_PCT = float(os.getenv("MIN_NET_PROFIT_AFTER_DELAY_PCT", getattr(config, "MIN_NET_PROFIT_AFTER_DELAY_PCT", 18.0)))
-BATCH_CANDIDATE_LIMIT = min(60, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 50))))
+BATCH_CANDIDATE_LIMIT = min(60, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 60))))
 ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC", getattr(config, "ALERT_COOLDOWN_SEC", 2700)))  # Cooldown 45m per lorong
 
 
@@ -461,6 +461,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     volumes = best_pair.get("volume") or {}
     vol_m5 = float(volumes.get("m5", 0.0) or 0.0)
     vol_h1 = float(volumes.get("h1", 0.0) or 0.0)
+    vol_h24 = float(volumes.get("h24", 0.0) or 0.0)
 
     # 3. Usia Pair: Lolos Jito Bundle Block-0 (>= 3.5m), Batas Ketat 24j/36j di Lorong 0 (Anti Zombie Micro-Cap),
     #    & Jalur CTO / Cult Multi-Hari (> 1 Hari s/d 60 Hari) di Lorong 1 s/d 5 ($Macca / $PONS / $STONK Guard)!
@@ -493,11 +494,35 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     else:
         age_minutes = 12.0
 
-    # 4. Temperatur Candle Anti-Pucuk & Anti Dead-Cat Bounce (Adaptif untuk Steady Climber, CTO, & Cult $1M+)
+    # PENANGKAL V2.7A (0ms RAM): Blokir Pantulan Ampas Pasca-Puncak Intraday ($Marvin 1 PM Guard)
+    # Jika koin intraday (75m <= usia <= 24j) sudah memutar Vol 24j raksasa (>= 5.0x MC sekarang),
+    # namun Vol 1j saat ini sudah kolaps < 22% dari rata-rata per jam masa puncak sebelumnya,
+    # berarti koin sudah selesai pesta di MC tinggi lalu ambruk dan hanya memantul lemah!
+    if 75.0 <= age_minutes <= 1440.0 and vol_h24 > (vol_h1 * 1.5) and vol_h24 >= (mc * 5.0):
+        prior_hours = max(0.5, (min(1440.0, age_minutes) - 60.0) / 60.0)
+        prior_hourly_vol = max(0.0, vol_h24 - vol_h1) / prior_hours
+        if prior_hourly_vol > 0.0 and vol_h1 < (prior_hourly_vol * 0.22):
+            collapse_pct = (1.0 - (vol_h1 / prior_hourly_vol)) * 100.0
+            return (
+                False,
+                f"Jebakan Post-Climax Aftermath: Vol 1j (${vol_h1:,.0f}) sudah kolaps -{collapse_pct:.0f}% dari rata-rata "
+                f"puncak sebelumnya (${prior_hourly_vol:,.0f}/j pada Vol24j ${vol_h24:,.0f}) -> Koin sudah lewat masa puncak!",
+                {}
+            )
+
+    # 4. Temperatur Candle Anti-Pucuk, Wave-1 Hyper-Ignition, & Anti Dead-Cat Bounce
     price_change = best_pair.get("priceChange") or {}
     p_m5 = float(price_change.get("m5", 0.0) or 0.0)
     p_h1 = float(price_change.get("h1", 0.0) or 0.0)
     p_h6 = float(price_change.get("h6", 0.0) or 0.0)
+
+    is_hyper_wave1_ignition = (
+        age_minutes <= 45.0
+        and c_cfg["corridor_id"] in (0, 1, 2)
+        and p_h1 >= max(150.0, p_m5 * 2.2)
+        and vol_h1 >= max(180_000.0, mc * 1.4)
+        and liq >= (c_cfg["min_liq"] * 1.25)
+    )
 
     is_proven_climber = (
         (
@@ -519,10 +544,11 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     else:
         min_p_m5 = 6.0
 
+    max_p_m5 = 68.0 if is_hyper_wave1_ignition else 45.0
     if p_m5 < min_p_m5:
         return False, f"Momentum 5m belum menginjak gas ({p_m5:+.1f}% < +{min_p_m5:.1f}%) - Tunggu dorongan naik", {}
-    if p_m5 > 45.0:
-        return False, f"ANTI-PUCUK: Candle 5m sudah kepanjangan (+{p_m5:.1f}% > +45%). Rawan koreksi sesaat!", {}
+    if p_m5 > max_p_m5:
+        return False, f"ANTI-PUCUK: Candle 5m sudah kepanjangan (+{p_m5:.1f}% > +{max_p_m5:.0f}%). Rawan koreksi sesaat!", {}
     if p_h1 <= 0.0 or p_h6 < -12.0:
         return False, f"Tren makro sedang distribusi/merah (H1: {p_h1:+.1f}%, H6: {p_h6:+.1f}%)", {}
 
@@ -557,9 +583,17 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         return False, f"Distribusi H1 berat: Penjual mendominasi 1 jam terakhir (Rasio H1 {buy_sell_ratio_h1:.2f}x)", {}
 
     high_tx_organic_flow = (
-        total_m5 >= (60 if is_mega_corridor else 80)
-        and is_proven_climber
-        and buy_sell_ratio_h1 >= (1.12 if is_mega_corridor else 1.18)
+        (
+            total_m5 >= (60 if is_mega_corridor else 80)
+            and is_proven_climber
+            and buy_sell_ratio_h1 >= (1.12 if is_mega_corridor else 1.18)
+        )
+        or (
+            is_hyper_wave1_ignition
+            and total_m5 >= 120
+            and cum_tx_24h >= 2500
+            and buy_sell_ratio_h1 >= 1.20
+        )
     )
     min_bs_m5 = (1.30 if is_mega_corridor else 1.35) if high_tx_organic_flow else 1.85
     min_cvd = (13.0 if is_mega_corridor else 15.0) if high_tx_organic_flow else 29.8
@@ -590,12 +624,14 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             {}
         )
 
-    # 8. PENANGKAL DEV LICIK #3: Anti-Wash-Breakout, Anti-Churn Sideways, & Perputaran Suplai
+    # 8. PENANGKAL DEV LICIK #3: Anti-Wash-Breakout vs Viral FOMO Velocity ($Marvin 10 AM Guard), Anti-Churn, & Perputaran Suplai
     vol_to_liq_m5 = vol_m5 / max(1.0, liq)
-    if vol_to_liq_m5 > 2.4:
+    is_viral_price_expansion = (p_m5 >= 14.0 and p_h1 >= 35.0 and buy_sell_ratio_m5 >= 1.35)
+    max_vol_to_liq_m5 = 4.8 if is_viral_price_expansion else 2.4
+    if vol_to_liq_m5 > max_vol_to_liq_m5:
         return (
             False,
-            f"Terdeteksi Wash-Trading Bot: Volume 5m (${vol_m5:,.0f}) > 2.4x isi kolam LP (${liq:,.0f}) -> Uang diputar di tempat!",
+            f"Terdeteksi Wash-Trading Bot: Volume 5m (${vol_m5:,.0f}) > {max_vol_to_liq_m5:.1f}x isi kolam LP (${liq:,.0f}) -> Uang diputar di tempat!",
             {}
         )
 
@@ -1032,8 +1068,89 @@ def analyze_holders_and_lp_lock(
 
 
 # ==============================================================================
-# MODUL 4: AUDIT MENDALAM PARALEL (RUGCHECK + ROUND-TRIP JUPITER + LIVE DRIFT)
+# MODUL 4: AUDIT MENDALAM PARALEL (RUGCHECK + JUPITER + OHLCV ATH SHIELD V2.7)
 # ==============================================================================
+def fetch_pool_ohlcv(pair_address: str, age_minutes: float, timeout: float = 2.4):
+    """Ambil candle OHLCV pool secara paralel untuk mengecek puncak ATH historis (0ms extra lag!)."""
+    if not pair_address:
+        return None
+    if age_minutes <= 1440.0:
+        url = (
+            f"https://api.geckoterminal.com/api/v2/networks/solana/pools/{pair_address}"
+            f"/ohlcv/minute?aggregate=15&limit=96&currency=usd"
+        )
+    else:
+        url = (
+            f"https://api.geckoterminal.com/api/v2/networks/solana/pools/{pair_address}"
+            f"/ohlcv/hour?aggregate=4&limit=180&currency=usd"
+        )
+    return fetch_json(url, timeout=timeout, retries=1)
+
+
+def evaluate_ohlcv_ath_trap(
+    ohlcv_payload,
+    current_price_usd: float,
+    current_mc_usd: float,
+    age_minutes: float
+) -> tuple[bool, str, dict]:
+    """
+    PERISAI V2.7B ANTI POST-ATH LOWER-HIGH BULL TRAP ($Marvin 1 PM Guard):
+    Membongkar koin yang tampak 'hijau' di snapshot M5/H1/H6 DexScreener, padahal sebenarnya
+    sudah pernah puncak tinggi beberapa jam/hari sebelumnya lalu ambruk dalam (-42% s/d -85%)
+    dan hanya memantul lemah di bawah tumpukan ribuan bagholder pucuk!
+    """
+    if not isinstance(ohlcv_payload, dict) or current_price_usd <= 0.0:
+        return True, "OHLCV tidak tersedia (lewati tanpa blokir semu)", {"ath_drawdown_pct": 0.0}
+
+    candles = (((ohlcv_payload.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or [])
+    if not candles:
+        return True, "Candle kosong", {"ath_drawdown_pct": 0.0}
+
+    max_high_price = 0.0
+    peak_candle_vol = 0.0
+    for row in candles:
+        if isinstance(row, (list, tuple)) and len(row) >= 6:
+            h_val = float(row[2] or 0.0)
+            v_val = float(row[5] or 0.0)
+            if h_val > max_high_price:
+                max_high_price = h_val
+            if v_val > peak_candle_vol:
+                peak_candle_vol = v_val
+
+    if max_high_price <= 0.0 or current_price_usd >= max_high_price:
+        return True, "Sedang di dekat / menembus ATH baru", {"ath_drawdown_pct": 0.0}
+
+    ath_drawdown_pct = round(((max_high_price - current_price_usd) / max_high_price) * 100.0, 1)
+    est_ath_mc = round(current_mc_usd * (max_high_price / current_price_usd), 0)
+    recent_vols = [
+        float(r[5] or 0.0) for r in candles[:2]
+        if isinstance(r, (list, tuple)) and len(r) >= 6
+    ]
+    recent_max_vol = max(recent_vols) if recent_vols else 0.0
+    vol_vs_peak_ratio = (recent_max_vol / peak_candle_vol) if peak_candle_vol > 0.0 else 1.0
+
+    if age_minutes <= 1440.0 and ath_drawdown_pct >= 42.0:
+        return (
+            False,
+            f"Jebakan Post-ATH Bull Trap: Harga masih -{ath_drawdown_pct:.1f}% di bawah puncak ATH hari ini "
+            f"(~${est_ath_mc:,.0f}) -> Pantulan di bawah ribuan bagholder pucuk!",
+            {"ath_drawdown_pct": ath_drawdown_pct, "est_ath_mc": est_ath_mc}
+        )
+
+    if age_minutes > 1440.0 and ath_drawdown_pct >= 55.0 and vol_vs_peak_ratio < 0.50:
+        return (
+            False,
+            f"Jebakan Lower-High Koin Ambruk: Harga masih -{ath_drawdown_pct:.1f}% dari ATH (~${est_ath_mc:,.0f}) "
+            f"dengan volume lemah ({vol_vs_peak_ratio*100:.0f}% dari puncak)!",
+            {"ath_drawdown_pct": ath_drawdown_pct, "est_ath_mc": est_ath_mc}
+        )
+
+    return True, "Struktur dekat ATH sehat", {
+        "ath_drawdown_pct": ath_drawdown_pct,
+        "est_ath_mc": est_ath_mc
+    }
+
+
 def audit_and_dispatch_candidate(
     mint: str,
     pairs: list,
@@ -1044,20 +1161,34 @@ def audit_and_dispatch_candidate(
     name = best_pair.get("baseToken", {}).get("name", "Unknown")
     symbol = best_pair.get("baseToken", {}).get("symbol", "SOL")
     mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
+    price_usd = float(best_pair.get("priceUsd") or 0.0)
     liq = float((best_pair.get("liquidity") or {}).get("usd") or 0.0)
     dex_id = best_pair.get("dexId", "raydium")
     pair_address = best_pair.get("pairAddress", "")
+    cand_age_mins = float(metrics.get("age_minutes", 60.0))
 
     txns_m5 = best_pair.get("txns", {}).get("m5", {})
     buys_m5 = int(txns_m5.get("buys", 0))
     sells_m5 = int(txns_m5.get("sells", 0))
 
-    # Tembak paralel: RugCheck Full Report + Jupiter 0.1 SOL Round-Trip (Buy -> Sell)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as sub_exec:
+    # Tembak 3 audit secara PARALEL (0ms tambahan waktu tunggu!): RugCheck + Jupiter Round-Trip + OHLCV ATH
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as sub_exec:
         f_rug = sub_exec.submit(fetch_json, f"https://api.rugcheck.xyz/v1/tokens/{mint}/report", 3.5)
         f_rt = sub_exec.submit(simulate_jupiter_roundtrip, mint, 2.7)
+        f_ohlcv = sub_exec.submit(fetch_pool_ohlcv, pair_address, cand_age_mins, 2.4)
         rug_data = f_rug.result()
         rt_res = f_rt.result()
+        ohlcv_data = f_ohlcv.result()
+
+    # 0. Verifikasi Struktur ATH Historis (Anti Post-ATH Lower-High Bull Trap seperti $Marvin jam 1 siang!)
+    ath_ok, ath_reason, _ = evaluate_ohlcv_ath_trap(ohlcv_data, price_usd, mc, cand_age_mins)
+    if not ath_ok:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": ath_reason
+        }
 
     # 1. Fail-Closed RugCheck Risk Score
     if not isinstance(rug_data, dict):
@@ -1208,7 +1339,7 @@ def audit_and_dispatch_candidate(
     )
 
     alert_msg = (
-        f"🎯 *[CORRIDOR SNIPER V2.6: CULT RUNNER & ANTI-BOTNET]*\n\n"
+        f"🎯 *[CORRIDOR SNIPER V2.7: PRE-PEAK & ANTI BULL-TRAP]*\n\n"
         f"🪙 *Token:* {safe_name} (`${safe_symbol}`)\n"
         f"📍 *Mint:* `{mint}`\n"
         f"🛤️ *Posisi:* `{metrics['corridor_name']}`\n\n"
@@ -1313,19 +1444,22 @@ def _extract_gt_solana_mints(gt_payload) -> list:
 
 def run_live_market_scan(engine, config) -> dict:
     """
-    FAST-TIME BATCH MULTI-FEED SCANNER V2.6 (50 KANDIDAT PARALEL < 1.5 - 2.2 DETIK):
-    1. Tarik paralel 6 radar (GeckoTerminal Trending 5m & 1h ~70ms + Organic PumpSwap + DexScreener Boosts/Profiles)
-       sehingga koin organik murni TANPA iklan Boost, CTO multi-hari ($Macca), & Cult Mega-Runner $1M->$50M+ ($PONS/$STONK) langsung tertangkap!
-    2. Ambil data pair seluruh kandidat dalam chunk paralel <=30 mint (~250ms total, 0ms penalti sekuensial!).
-    3. Saring di RAM (< 1ms) dengan Lorong 0-5 + Anti-Pucuk + CTO/Cult Guard + Proyeksi Delay 22s.
-    4. Hanya kandidat elit yang lolos disimulasikan paralel ke RugCheck & Round-Trip Jupiter (0.1 + 1.0 SOL)!
+    FAST-TIME BATCH MULTI-FEED SCANNER V2.7 (60 KANDIDAT PARALEL < 1.0 - 2.0 DETIK):
+    1. Tarik paralel 7 radar (GeckoTerminal Trending 5m Page 1 & 2 = 40 pool terpanas + GT 1h + Organic PumpSwap + Boosts/Profiles)
+       sehingga roket organik baru TANPA Boost ($Marvin jam 09:35), CTO multi-hari ($Macca), & Cult $1M->$50M+ ($PONS/$STONK) langsung tertangkap!
+    2. Ambil data pair seluruh kandidat dalam 2 chunk paralel <=30 mint (~250ms total, 0ms penalti sekuensial!).
+    3. Saring di RAM (< 1ms) dengan Lorong 0-5 + Wave-1 Ignition + Anti Post-Climax Aftermath + Proyeksi Delay 22s.
+    4. Kandidat elit diaudit 3-arah paralel: RugCheck + Round-Trip Jupiter (0.1 & 1.0 SOL) + Real OHLCV ATH Bull-Trap Shield!
     """
     t0 = time.time()
-    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V2.6 Multi-Feed Delay-Compensated Scan...", flush=True)
+    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V2.7 7-Feed Delay-Compensated Scan...", flush=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as feed_exec:
-        f_gt_5m = feed_exec.submit(
+    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as feed_exec:
+        f_gt_5m_p1 = feed_exec.submit(
             fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1", 2.5
+        )
+        f_gt_5m_p2 = feed_exec.submit(
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=2", 2.5
         )
         f_gt_1h = feed_exec.submit(
             fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1", 2.5
@@ -1335,7 +1469,8 @@ def run_live_market_scan(engine, config) -> dict:
         f_b_top = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/top/v1", 2.8)
         f_prof = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-profiles/latest/v1", 2.8)
 
-        gt_5m = f_gt_5m.result()
+        gt_5m_p1 = f_gt_5m_p1.result()
+        gt_5m_p2 = f_gt_5m_p2.result()
         gt_1h = f_gt_1h.result()
         organic_search = f_organic.result()
         boosts_latest = f_b_latest.result()
@@ -1345,8 +1480,9 @@ def run_live_market_scan(engine, config) -> dict:
     ordered_mints = []
     boost_map = {}
 
-    # 1. Prioritaskan koin organik yang benar-benar meledak volume on-chain 5m & 1h (Tanpa perlu beli Boost!)
-    ordered_mints.extend(_extract_gt_solana_mints(gt_5m))
+    # 1. Prioritaskan 40 pool organik terpanas 5m & 20 pool 1h di Solana (Tanpa perlu beli Boost!)
+    ordered_mints.extend(_extract_gt_solana_mints(gt_5m_p1))
+    ordered_mints.extend(_extract_gt_solana_mints(gt_5m_p2))
     ordered_mints.extend(_extract_gt_solana_mints(gt_1h))
 
     # 2. Koin organik PumpSwap di rentang Lorong ($25k-$8.8M termasuk Cult Runner >$1M)
@@ -1538,7 +1674,7 @@ class handler(BaseHTTPRequestHandler):
             chat_id = getattr(config, "TELEGRAM_CHAT_ID", None) or os.getenv("TELEGRAM_CHAT_ID")
             ledger = _load_corridor_ledger()
             response_data = {
-                "service": "Corridor Sniper V2.6 — Cult Mega-Runner ($1M->$50M+), CTO & Anti-Botnet",
+                "service": "Corridor Sniper V2.7 — Pre-Peak Wave-1, Anti Post-ATH Trap & Cult Mega-Runner",
                 "status": "healthy",
                 "python_version": sys.version.split()[0],
                 "engine_loaded": engine is not None,
@@ -1669,7 +1805,7 @@ class handler(BaseHTTPRequestHandler):
         elif action == "scan" or is_cron:
             scan_summary = run_live_market_scan(engine, config)
             response_data = {
-                "service": "Corridor Sniper V2.6 — Cult Mega-Runner ($1M->$50M+), Multi-Day CTO & Anti-Botnet Radar",
+                "service": "Corridor Sniper V2.7 — Pre-Peak Wave-1, Anti Post-ATH Bull-Trap & Cult Mega-Runner Radar",
                 "status": "ready",
                 "is_cron_call": is_cron,
                 "timestamp": time.time(),
@@ -1689,12 +1825,11 @@ class handler(BaseHTTPRequestHandler):
                     "deadzone_6_blocked": "> $8.80M (Area Late-Stage Dekat $10M+ DIBLOKIR, Kawal via Moonbag)"
                 },
                 "execution_and_delay_shields": [
-                    "6-Feed Parallel Discovery (GT 5m/1h Tanpa Boost + PumpSwap + Boosts) 50-Mint (~0.9-1.8 detik)",
-                    "22-Second Forward Delay Projection + Hard MAX ENTRY MC Guard + 70/30 Moonbag Strategy",
+                    "7-Feed Parallel Discovery (GT 5m Page 1&2 = 40 Hot Pools + GT 1h + PumpSwap + Boosts) 60-Mint (~0.8-1.8 detik)",
+                    "Wave-1 Hyper-Ignition & Viral Velocity Allowance (Tangkap roket pagi sebelum puncak seperti $Marvin 09:35)",
+                    "Dual Post-ATH Bull-Trap Shield: Stage-1 Climax Exhaustion + Parallel OHLCV Real ATH Drawdown Guard (Blokir pantulan 1 PM pasca-ambruk)",
                     "Post-$1M Cult Corridors (Lorong 4 & 5) dengan Anti-Fake-FDV (>=1.2k/2.2k Holders, Dev <=1.5%, 1 SOL Depth <=6.5%)",
-                    "Anti-Nano-Swarm Pareto Floor & Anti-Decoy Whale (Blokir 3.000+ dompet bot < Top-20)",
-                    "H1 Botnet Hyper-Frequency & Micro-Ticket Guard + Anti-Churn Distribution Trap",
-                    "Parallel 0.1 SOL + 1.0 SOL Jupiter Round-Trip & DLMM Hollow-Bin Cliff Check (0ms extra lag)"
+                    "Anti-Nano-Swarm Pareto Floor & H1 Botnet Guard + Parallel 0.1 & 1.0 SOL Jupiter Round-Trip (0ms extra lag)"
                 ]
             }
 
