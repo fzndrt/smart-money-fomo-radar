@@ -35,7 +35,7 @@ class FomoConfig:
     MIN_AVG_PEAK_GAIN_PCT: float = 500.0
 
     PRE_PEAK_ONLY: bool = True
-    MAX_RUNNER_MCAP_USD: float = float(os.getenv("MAX_RUNNER_MCAP_USD", "2000000.0"))
+    MAX_RUNNER_MCAP_USD: float = float(os.getenv("MAX_RUNNER_MCAP_USD", "3500000.0"))
     MAX_SMART_MONEY_INFLOW: int = int(os.getenv("MAX_SMART_MONEY_INFLOW", "3"))
     ENABLE_REBUY_ALERTS: bool = False
 
