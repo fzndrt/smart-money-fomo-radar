@@ -56,8 +56,14 @@ PIPELINE_REACTION_DELAY_SEC = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", get
 PRIORITY_TIP_BUFFER_PCT = 1.0            # Buffer priority fee / Jito tip saat eksekusi nyata
 MAX_ROUNDTRIP_LOSS_PCT = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", getattr(config, "MAX_ROUNDTRIP_LOSS_PCT", 5.5)))
 MIN_NET_PROFIT_AFTER_DELAY_PCT = float(os.getenv("MIN_NET_PROFIT_AFTER_DELAY_PCT", getattr(config, "MIN_NET_PROFIT_AFTER_DELAY_PCT", 18.0)))
-BATCH_CANDIDATE_LIMIT = min(60, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 60))))
+BATCH_CANDIDATE_LIMIT = min(90, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 75))))
 ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC", getattr(config, "ALERT_COOLDOWN_SEC", 2700)))  # Cooldown 45m per lorong
+
+# KONSTANTA JALUR KHUSUS "MASUK DI AWAL" (PAUS POMPA DINI < $70K — NAIK DULU SEBELUM DUMP)
+EARLY_WHALE_MIN_MC = 28_000.0            # Sudah lulus kurva & bertahan di atas lantai dasar kelulusan
+EARLY_WHALE_MAX_SPOT_MC = 66_000.0       # Spot MC wajib <= $66k agar saat klik Telegram (~22d) tetap aman < $70k!
+EARLY_WHALE_MAX_BUY_MC = 69_000.0        # Batas mutlak klik beli user (< $70,000 dengan margin aman)
+EARLY_WHALE_MAX_AGE_MINS = 35.0          # Wajib koin segar baru lahir/lulus (3.5m - 35m), bukan koin mengendap lama
 
 
 def _esc_md(text: str) -> str:
@@ -762,6 +768,178 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
 
 
 # ==============================================================================
+# MODUL 2B (V3.1): JALUR KHUSUS "MASUK DI AWAL" (< $70K PAUS POMPA DINI)
+# Membedakan koin baru lulus yang akan DIPOMPA TINGGI DULU oleh Paus/MM Modal Besar
+# vs koin receh yang langsung dibanting di bawah $100k — TANPA mengubah filter V3.0!
+# ==============================================================================
+def evaluate_early_whale_candidate(best_pair: dict, pair_count: int = 1, boost_amount: int = 0) -> tuple[bool, str, dict]:
+    mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
+    liq = float((best_pair.get("liquidity") or {}).get("usd") or 0.0)
+
+    # 1. Wajib berada di zona perawan pasca-lulus di bawah $70k ($28k - $66k spot)
+    if mc < EARLY_WHALE_MIN_MC or mc > EARLY_WHALE_MAX_SPOT_MC:
+        return False, f"MC di luar zona Masuk di Awal <$70k (${mc:,.0f} harus $28k-$66k agar aman di bawah $70k)", {}
+
+    # 2. Wajib memiliki timestamp kelahiran nyata & berada di jendela awal 3.5m - 35.0m
+    pair_created_at_ms = best_pair.get("pairCreatedAt")
+    if not pair_created_at_ms:
+        return False, "Timestamp pairCreatedAt kosong (wajib terverifikasi untuk Masuk di Awal)", {}
+
+    age_minutes = ((time.time() * 1000.0) - float(pair_created_at_ms)) / 60000.0
+    if age_minutes < 3.5:
+        return False, f"Terlalu dini ({age_minutes:.1f}m < 3.5m): Tunggu lolos guncangan blok-0 kelulusan", {}
+    if age_minutes > EARLY_WHALE_MAX_AGE_MINS:
+        return False, f"Usia lewat fase awal ({age_minutes:.1f}m > {EARLY_WHALE_MAX_AGE_MINS:.0f}m)", {}
+
+    # 3. Fondasi Likuiditas Paus (Wajib jauh lebih tebal dari koin receh: LP >= $12.5k & LP/MC >= 16%)
+    if liq < 12_500.0:
+        return False, f"LP kurang tebal untuk standar Paus Awal (${liq:,.0f} < $12,500)", {}
+    liq_mc_ratio = (liq / max(1.0, mc)) * 100.0
+    if liq_mc_ratio < 16.0:
+        return False, f"Rasio LP/MC kurang tebal untuk jaminan tahan banting awal ({liq_mc_ratio:.1f}% < 16.0%)", {}
+
+    # 4. Data Orderflow & Volume Akumulasi Awal
+    txns = best_pair.get("txns") or {}
+    m5_tx = txns.get("m5") or {}
+    h1_tx = txns.get("h1") or {}
+    h24_tx = txns.get("h24") or {}
+
+    buys_m5, sells_m5 = int(m5_tx.get("buys", 0)), int(m5_tx.get("sells", 0))
+    buys_h1, sells_h1 = int(h1_tx.get("buys", 0)), int(h1_tx.get("sells", 0))
+    cum_tx_24h = int(h24_tx.get("buys", 0)) + int(h24_tx.get("sells", 0))
+    total_m5 = buys_m5 + sells_m5
+    total_h1 = buys_h1 + sells_h1
+
+    volumes = best_pair.get("volume") or {}
+    vol_m5 = float(volumes.get("m5", 0.0) or 0.0)
+    vol_h1 = float(volumes.get("h1", 0.0) or 0.0)
+
+    avg_ticket_m5 = vol_m5 / max(1, total_m5)
+    avg_ticket_h1 = vol_h1 / max(1, total_h1)
+
+    # 5. VERIFIKASI MODAL HANGUS (SUNK COST) ATAU BELANJA BLOK PAUS (Anti Dev Receh Banting <$100k!)
+    # Bandar yang sudah bakar uang Boost/Enhanced Profile di MC <$68.5k ATAU belanja tiket besar ($55+/tx)
+    # secara matematis RUGI jika langsung banting di bawah $100k — mereka wajib pompa tinggi dulu!
+    info = best_pair.get("info") or {}
+    has_paid_dex_profile = bool(info.get("header") or info.get("openGraph")) and bool(
+        info.get("socials") or info.get("websites")
+    )
+
+    whale_proof_label = ""
+    if boost_amount >= 100 and avg_ticket_m5 >= 26.0 and vol_m5 >= 5_500.0:
+        whale_proof_label = f"Sunk-Cost Boost {boost_amount}x di MC Bawah + Tiket ${avg_ticket_m5:.0f}/tx"
+    elif (avg_ticket_m5 >= 55.0 or avg_ticket_h1 >= 50.0) and vol_m5 >= 8_500.0:
+        whale_proof_label = f"Akumulasi Blok Paus (${avg_ticket_m5:.0f}/tx | Vol 5m ${vol_m5:,.0f})"
+    elif (has_paid_dex_profile or boost_amount >= 50) and avg_ticket_m5 >= 38.0 and vol_m5 >= 7_000.0 and liq_mc_ratio >= 18.0:
+        whale_proof_label = f"Modal Profil/Boost Dini + Arus Paus (${avg_ticket_m5:.0f}/tx | LP {liq_mc_ratio:.1f}%)"
+    else:
+        return (
+            False,
+            f"Belum terbukti dipompa Paus/Modal Besar di awal (Boost={boost_amount}, Tiket=${avg_ticket_m5:.1f}, Vol5m=${vol_m5:,.0f})",
+            {}
+        )
+
+    # 6. Struktur Momentum "Naik Dulu" & Dominasi Akumulasi Sejak Lahir
+    price_change = best_pair.get("priceChange") or {}
+    p_m5 = float(price_change.get("m5", 0.0) or 0.0)
+    p_h1 = float(price_change.get("h1", 0.0) or 0.0)
+    p_h6 = float(price_change.get("h6", 0.0) or 0.0)
+
+    if p_m5 < 8.0 or p_m5 > 58.0:
+        return False, f"Momentum 5m di luar zona akumulasi awal sehat ({p_m5:+.1f}% harus +8% s/d +58%)", {}
+    if p_h1 < 15.0 or p_h6 < 0.0:
+        return False, f"Tren sejak lahir kurang ekspansif (H1: {p_h1:+.1f}%, H6: {p_h6:+.1f}%)", {}
+
+    if cum_tx_24h < 140 or buys_m5 < 30 or sells_m5 >= buys_m5:
+        return False, f"Partisipasi beli awal belum padat ({buys_m5}B/{sells_m5}S, total {cum_tx_24h} tx)", {}
+
+    buy_sell_ratio_m5 = buys_m5 / max(1, sells_m5)
+    buy_sell_ratio_h1 = buys_h1 / max(1, sells_h1) if total_h1 > 0 else 1.5
+    cvd_ratio = round(((buys_m5 - sells_m5) / max(1, total_m5)) * 100.0, 1)
+
+    # Izinkan alur Market-Maker Paus dua arah yang sehat (>= 1.45x) ASALKAN akumulasi total 1 jam net beli kuat (>= 1.22x)!
+    if buy_sell_ratio_m5 < 1.45 or cvd_ratio < 18.0:
+        return False, f"Dominasi beli 5m kurang kuat untuk Masuk di Awal ({buy_sell_ratio_m5:.2f}x | CVD +{cvd_ratio}%)", {}
+    if buy_sell_ratio_h1 < 1.22:
+        return False, f"Akumulasi total sejak lahir lemah (Rasio H1 {buy_sell_ratio_h1:.2f}x < 1.22x) -> Rawan distribusi dini", {}
+
+    # 7. Tetap kunci rapat Anti-Siphon, Anti-Wash-Loop, & Anti-Bump-Bot Receh!
+    vol_to_liq_m5 = vol_m5 / max(1.0, liq)
+    if buy_sell_ratio_m5 >= 2.8 and vol_m5 >= 5_000.0 and p_m5 < 9.5:
+        return False, "Terdeteksi Siphon Bot di MC awal (klik beli ramai tapi harga ditahan)", {}
+    if total_m5 >= 80 and buy_sell_ratio_m5 >= 2.15 and vol_to_liq_m5 >= 0.55 and p_m5 < 9.0:
+        return False, "Terdeteksi Asymmetric Siphon di MC awal", {}
+    if vol_to_liq_m5 > 3.6:
+        return False, f"Perputaran M5 terlalu ekstrem terhadap LP ({vol_to_liq_m5:.2f}x > 3.6x)", {}
+    if total_h1 >= 150 and avg_ticket_h1 < 22.0:
+        return False, f"Terdeteksi Bump-Bot Receh H1 (tiket rata-rata ${avg_ticket_h1:.1f} < $22)", {}
+
+    turnover_h1 = vol_h1 / max(1.0, mc)
+    if vol_h1 < max(18_000.0, mc * 0.45):
+        return False, f"Volume serapan awal belum cukup kuat (${vol_h1:,.0f})", {}
+
+    effective_h1_mins = min(60.0, max(5.0, age_minutes))
+    accel_ratio = (vol_m5 / 5.0) / max(1.0, vol_h1 / effective_h1_mins)
+    if age_minutes >= 12.0 and accel_ratio < 0.95 and (vol_m5 / max(1.0, mc)) < 0.14:
+        return False, f"Arus uang segar paus melambat (Akselerasi {accel_ratio:.2f}x)", {}
+
+    # 8. GARANSI MUTLAK BELI DI BAWAH MC $70K SETELAH KOMPENSASI DELAY TELEGRAM 22 DETIK!
+    vel_pct_per_sec = max(0.0, p_m5) / 300.0
+    accel_boost = min(2.2, max(1.0, accel_ratio * 0.85))
+    est_delay_drift_pct = round(min(15.0, vel_pct_per_sec * PIPELINE_REACTION_DELAY_SEC * accel_boost), 2)
+    prelim_projected_mc = mc * (1.0 + (est_delay_drift_pct / 100.0))
+
+    if prelim_projected_mc > EARLY_WHALE_MAX_BUY_MC:
+        return (
+            False,
+            f"MC ${mc:,.0f} terlalu mepet $70k: saat klik di Telegram (~22d) diproyeksi ${prelim_projected_mc:,.0f} (> $69.8k)",
+            {}
+        )
+
+    tp1_mc = round(max(115_000.0, prelim_projected_mc * 2.05), 0)   # ~2x Tarik Modal Pokok (Aman sebelum/lewat $120k)
+    tp2_mc = round(max(260_000.0, prelim_projected_mc * 4.80), 0)   # ~4.8x Ekspansi Menengah
+    tp3_mc = round(max(780_000.0, prelim_projected_mc * 15.00), 0)  # ~15x-20x Moonbag Kawal Paus
+
+    score = min(
+        99,
+        int(
+            48.0
+            + min(20.0, (avg_ticket_m5 / 60.0) * 20.0)
+            + min(15.0, (buy_sell_ratio_m5 / 2.2) * 15.0)
+            + min(10.0, (liq_mc_ratio / 22.0) * 10.0)
+            + (7.0 if boost_amount >= 100 or has_paid_dex_profile else 3.0)
+        )
+    )
+
+    return True, "LOLOS TAHAP 1 MASUK DI AWAL (<$70K WHALE PUMP)", {
+        "score": score,
+        "is_early_whale": True,
+        "whale_proof_label": whale_proof_label,
+        "corridor_id": 0,
+        "corridor_name": "MASUK DI AWAL (< $70K — Paus Pompa Dini)",
+        "corridor_max_mc": EARLY_WHALE_MAX_BUY_MC,
+        "target_tp_mc": tp1_mc,
+        "tp2_mc": tp2_mc,
+        "tp3_mc": tp3_mc,
+        "cut_loss_pct": 13.5,
+        "est_delay_drift_pct": est_delay_drift_pct,
+        "cvd_ratio": cvd_ratio,
+        "buy_sell_ratio": round(buy_sell_ratio_m5, 2),
+        "buy_sell_ratio_h1": round(buy_sell_ratio_h1, 2),
+        "avg_ticket": round(avg_ticket_m5, 1),
+        "liq_mc_ratio": round(liq_mc_ratio, 1),
+        "turnover_h1": round(turnover_h1, 2),
+        "accel_ratio": round(accel_ratio, 2),
+        "price_change_m5": round(p_m5, 1),
+        "price_change_h1": round(p_h1, 1),
+        "age_minutes": round(age_minutes, 1),
+        "cum_tx_24h": cum_tx_24h,
+        "boost_amount": boost_amount,
+        "is_hyper_wave1": False
+    }
+
+
+# ==============================================================================
 # MODUL 3: AUDIT KONTRAK, SALDO DEV, LP ASLI (HARD SOL), & ANTI NANO-SWARM V2.4
 # ==============================================================================
 def analyze_holders_and_lp_lock(
@@ -1310,6 +1488,142 @@ def evaluate_ohlcv_ath_trap(
     }
 
 
+def verify_early_whale_stage2(
+    rug_data: dict,
+    holder_meta: dict,
+    ohlcv_payload,
+    current_price_usd: float,
+    live_mc: float,
+    projected_entry_mc: float,
+    age_minutes: float,
+    rt_loss_pct: float,
+    depth_loss_pct: float,
+    live_drift_pct: float
+) -> tuple[bool, str, dict]:
+    """
+    VERIFIKASI LAPIS KEDUA KHUSUS "MASUK DI AWAL" (< $70K):
+    Memastikan koin benar-benar perawan di bawah $70k (belum pernah menyentuh plafon $80k-$100k lalu banting!),
+    diluncurkan oleh dompet bersih (bukan pabrik scammer), didukung LP SOL tebal, dan memiliki lantai candle naik.
+    """
+    if live_mc < EARLY_WHALE_MIN_MC or live_mc > 69_500.0:
+        return False, f"MC Live On-Chain (${live_mc:,.0f}) sudah keluar zona <$70k Masuk di Awal", {}
+    if projected_entry_mc > EARLY_WHALE_MAX_BUY_MC:
+        return False, f"Proyeksi MC klik (${projected_entry_mc:,.0f}) melewati batas <$70k", {}
+
+    # 1. Deployer Wajib Dompet Segar/Bersih (<= 3 riwayat token), BUKAN dompet pabrik rugger!
+    creator_tokens_cnt = len(rug_data.get("creatorTokens") or [])
+    if creator_tokens_cnt > 3:
+        return (
+            False,
+            f"Deployer bukan dompet khusus proyek besar (sudah pernah membuat {creator_tokens_cnt} token > batas 3)",
+            {}
+        )
+
+    # 2. Saldo langsung Dev <= 1.5%, Holder nyata >= 65, & Tidak ada paus tunggal > 4.2%
+    creator_pct = float(holder_meta.get("creator_pct") or 0.0)
+    total_holders = int(holder_meta.get("total_holders") or 0)
+    max_single = float(holder_meta.get("max_single") or 0.0)
+    pure_top10 = float(holder_meta.get("pure_top10") or 0.0)
+    sol_backing = float(holder_meta.get("sol_backing_ratio") or 0.0)
+    lp_locked = float(holder_meta.get("lp_locked_pct") or 0.0)
+
+    if creator_pct > 1.5:
+        return False, f"Saldo langsung Dev masih {creator_pct:.1f}% (> 1.5%) pada koin awal", {}
+    if total_holders < 65:
+        return False, f"Jumlah partisipan awal masih terlalu tipis ({total_holders} < 65 holders)", {}
+    if max_single > 4.2:
+        return False, f"1 dompet memegang terlalu besar di awal ({max_single:.1f}% > 4.2%)", {}
+    if pure_top10 < 5.8 or pure_top10 > 21.5:
+        return False, f"Konsentrasi Top 10 di luar pita ideal Paus Awal ({pure_top10:.1f}% harus 5.8%-21.5%)", {}
+
+    # 3. Batas super-ketat Klaster Transfer Insider Kompak (< 9.5% suplai)
+    token_info = rug_data.get("token") or {}
+    supply_raw = float(token_info.get("supply") or 0.0)
+    if supply_raw > 0.0:
+        for net in (rug_data.get("insiderNetworks") or []):
+            if isinstance(net, dict):
+                net_size = int(net.get("activeAccounts") or net.get("size") or 0)
+                net_hold_pct = (float(net.get("currentHolding") or 0.0) / supply_raw) * 100.0
+                if 2 <= net_size <= 12 and net_hold_pct >= 9.5:
+                    return (
+                        False,
+                        f"Klaster transfer awal terlalu pekat ({net_size} dompet memegang {net_hold_pct:.1f}% >= 9.5%)",
+                        {}
+                    )
+
+    # 4. Kedalaman Kolam Hard-Asset >= 40%, LP Lock >= 90%, & Eksekusi 0.1/1.0 SOL Mulus
+    if sol_backing < 40.0:
+        return False, f"Backing aset keras LP awal kurang tebal ({sol_backing:.1f}% < 40.0%)", {}
+    if lp_locked < 90.0:
+        return False, f"LP Lock awal kurang dari standar aman ({lp_locked:.1f}% < 90.0%)", {}
+    if rt_loss_pct > 5.0 or depth_loss_pct > 11.5:
+        return False, f"Friksi keluar 1.0 SOL masih terlalu kasar ({depth_loss_pct:.1f}%)", {}
+    if live_drift_pct < -4.5 or live_drift_pct > 10.0:
+        return False, f"Drift harga live tidak stabil untuk entry awal ({live_drift_pct:+.1f}%)", {}
+
+    # 5. Verifikasi Grafik 5m Perawan (<$76k ATH) & Lantai Paus Naik (Bukan koin gagal tembus $100k yang turun lagi!)
+    raw_candles = []
+    if isinstance(ohlcv_payload, dict):
+        raw_candles = (((ohlcv_payload.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or [])
+    valid_candles = [
+        row for row in raw_candles
+        if isinstance(row, (list, tuple)) and len(row) >= 6 and float(row[2] or 0.0) > 0.0
+    ]
+    valid_candles.sort(key=lambda r: float(r[0] or 0.0))
+
+    if age_minutes > 10.0 and len(valid_candles) < 2:
+        return False, "Candle 5m belum tersedia lengkap untuk pembuktian lantai harga paus (>10m)", {}
+
+    est_ath_mc = live_mc
+    ath_drawdown_pct = 0.0
+    if valid_candles and current_price_usd > 0.0:
+        max_high_price = max(float(r[2] or 0.0) for r in valid_candles)
+        if max_high_price > current_price_usd:
+            est_ath_mc = round(live_mc * (max_high_price / current_price_usd), 0)
+            ath_drawdown_pct = round(((max_high_price - current_price_usd) / max_high_price) * 100.0, 1)
+
+        # Jaminan 100% Perawan <$76k: Tolak keras jika koin ternyata sudah pernah menyentuh $80k-$100k+ lalu banting!
+        if est_ath_mc > 76_000.0 or ath_drawdown_pct > 18.0:
+            failed_wall = (est_ath_mc > 78_000.0 and ath_drawdown_pct >= 22.0)
+            return (
+                False,
+                f"Bukan Masuk di Awal Murni: Koin sudah pernah menyentuh ~${est_ath_mc:,.0f} lalu turun -{ath_drawdown_pct:.1f}%!",
+                {"failed_100k_wall": failed_wall}
+            )
+
+        # Tolak jarum pancingan yang langsung dibanting >= 10%
+        for r in valid_candles[-2:]:
+            o_v, h_v = float(r[1] or 0.0), float(r[2] or 0.0)
+            if o_v > 0.0 and h_v > current_price_usd:
+                c_pump = ((h_v - o_v) / o_v) * 100.0
+                w_slam = ((h_v - current_price_usd) / h_v) * 100.0
+                if c_pump >= 30.0 and w_slam >= 10.0:
+                    return False, f"Jarum atas awal langsung dibanting -{w_slam:.1f}% dari pucuk candle", {}
+
+        # Lantai harga (Low) wajib terjaga / naik (Paus memasang bid-wall SOL) & volume hijau mengalahkan merah
+        if len(valid_candles) >= 2:
+            first_low = float(valid_candles[0][3] or 0.0)
+            last_low = float(valid_candles[-1][3] or 0.0)
+            if first_low > 0.0 and last_low < (first_low * 0.92):
+                return False, "Lantai support awal jebol di bawah titik lahir (tidak ada bid-wall paus)", {}
+
+            recent_slice = valid_candles[-3:]
+            red_vol = sum(float(r[5] or 0.0) for r in recent_slice if float(r[4] or 0.0) < float(r[1] or 0.0))
+            green_vol = sum(float(r[5] or 0.0) for r in recent_slice if float(r[4] or 0.0) >= float(r[1] or 0.0))
+            if red_vol > 0.0 and green_vol < (red_vol * 1.35):
+                return (
+                    False,
+                    f"Tekanan jual merah awal terlalu besar (${red_vol:,.0f} merah vs ${green_vol:,.0f} hijau)",
+                    {}
+                )
+
+    return True, "TERVERIFIKASI PAUS POMPA DINI (<$70K)", {
+        "creator_tokens_cnt": creator_tokens_cnt,
+        "est_ath_mc": est_ath_mc,
+        "ath_drawdown_pct": ath_drawdown_pct
+    }
+
+
 def audit_and_dispatch_candidate(
     mint: str,
     pairs: list,
@@ -1485,8 +1799,108 @@ def audit_and_dispatch_candidate(
                 "reason": f"HARGA KABUR DULUAN ON-CHAIN (+{live_drift_pct:.1f}% di atas DexScreener) — Terlambat masuk, rawan pucuk!"
             }
 
-    # 5. KALKULASI FINAL MC REAL-TIME + KOMPENSASI DELAY 22 DETIK + GARANSI PROFIT BERSIH
+    # 5. KALKULASI FINAL MC REAL-TIME + JALUR KHUSUS "MASUK DI AWAL" (<$70K) VS CORRIDOR SNIPER V3.0
     live_mc = mc * (1.0 + (live_drift_pct / 100.0))
+    total_friction_pct = round(rt_loss_pct + PRIORITY_TIP_BUFFER_PCT, 2)
+    safe_name = _esc_md(name)
+    safe_symbol = _esc_md(symbol)
+
+    if metrics.get("is_early_whale"):
+        early_proj_mc = live_mc * (1.0 + (metrics["est_delay_drift_pct"] / 100.0))
+        ew_ok, ew_reason, ew_meta = verify_early_whale_stage2(
+            rug_data=rug_data,
+            holder_meta=holder_meta,
+            ohlcv_payload=ohlcv_data,
+            current_price_usd=price_usd,
+            live_mc=live_mc,
+            projected_entry_mc=early_proj_mc,
+            age_minutes=cand_age_mins,
+            rt_loss_pct=rt_loss_pct,
+            depth_loss_pct=depth_loss_pct,
+            live_drift_pct=live_drift_pct
+        )
+        if ew_ok:
+            early_max_buy_mc = round(min(EARLY_WHALE_MAX_BUY_MC, max(early_proj_mc * 1.08, live_mc * 1.12)), 0)
+            tp1_mc = round(max(115_000.0, early_proj_mc * 2.05), 0)
+            tp2_mc = round(max(260_000.0, early_proj_mc * 4.80), 0)
+            tp3_mc = round(max(780_000.0, early_proj_mc * 15.00), 0)
+            tp1_net_pct = round(((tp1_mc - early_proj_mc) / early_proj_mc) * 100.0 - total_friction_pct, 1)
+            tp2_net_pct = round(((tp2_mc - early_proj_mc) / early_proj_mc) * 100.0 - total_friction_pct, 0)
+            cut_loss = metrics["cut_loss_pct"]
+            whale_proof_label = metrics.get("whale_proof_label", "Verifikasi Paus & LP Tebal")
+
+            alert_msg = (
+                f"🚀 *MASUK DI AWAL*\n"
+                f"🐋 *Verifikasi Paus Pompa Dini (< $70K — Naik Dulu Sebelum Distribusi)*\n\n"
+                f"🪙 *Token:* {safe_name} (`${safe_symbol}`)\n"
+                f"📍 *Mint:* `{mint}`\n"
+                f"🔑 *Bukti Paus Masuk:* `{_esc_md(whale_proof_label)}`\n\n"
+                f"💰 *MC Live On-Chain:* `${live_mc:,.0f}` *(Perawan < $70K | Drift: {live_drift_pct:+.1f}%)*\n"
+                f"⏱️ *Est. MC Saat Anda Klik (~{int(PIPELINE_REACTION_DELAY_SEC)}d):* `${early_proj_mc:,.0f}`\n"
+                f"🚧 *BATAS MAKSIMAL BOLEH BELI:* `${early_max_buy_mc:,.0f}` *(Lewat $70K = JANGAN BELI!)*\n\n"
+                f"🎯 *Rencana Panen Bertahap (Nunut Paus Naik Tinggi):*\n"
+                f"• *TP 1 (Tarik Modal 50%):* `${tp1_mc:,.0f}` *(+{tp1_net_pct}% — Modal Pokok 100% Aman!)*\n"
+                f"• *TP 2 (Panen 30%):* `${tp2_mc:,.0f}` *(+{tp2_net_pct:.0f}% — Ekspansi Menengah)*\n"
+                f"• *Moonbag Gratis (20%):* `${tp3_mc:,.0f}+` *(Kawal jika Paus pompa +1.000% s/d +2.000%!)*\n"
+                f"🛑 *Hard Stop-Loss Ketat:* `-{cut_loss}%` *(Wajib pasang otomatis)*\n\n"
+                f"🔄 *Uji Jual 0.1 & 1.0 SOL:* `LOLOS` (Friksi `{rt_loss_pct}%` | Depth 1 SOL `{depth_loss_pct}%`)\n"
+                f"📈 *Struktur Awal:* Usia `{metrics['age_minutes']}m` | 5m `+{metrics['price_change_m5']}%` | H1 `+{metrics.get('price_change_h1', 0)}%` | Tiket `${metrics['avg_ticket']}`\n"
+                f"📊 *Orderflow Paus:* `{buys_m5} Buy` vs `{sells_m5} Sell` (`{metrics['buy_sell_ratio']}x` | H1 `{metrics.get('buy_sell_ratio_h1', 0)}x`)\n"
+                f"💧 *Likuiditas Tebal:* `${liq:,.0f}` (`{metrics['liq_mc_ratio']}%` MC | Hard Backing `{holder_meta['sol_backing_ratio']}%` | Lock `{holder_meta['lp_locked_pct']}%`)\n"
+                f"👥 *Deployer Bersih:* Riwayat `{ew_meta['creator_tokens_cnt']} token` | Saldo Dev `{holder_meta['creator_pct']}%` | Holders `{holder_meta['total_holders']}`\n\n"
+                f"🔗 *DexScreener:* [Lihat Chart](https://dexscreener.com/solana/{mint})\n"
+                f"⚡ *Jupiter Swap:* [Eksekusi Cepat](https://jup.ag/swap/SOL-{mint})"
+            )
+
+            bot_tok = getattr(config, "TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+            chat_id = getattr(config, "TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+            sent, detail = send_telegram_direct(bot_tok, chat_id, alert_msg)
+            if sent:
+                _mark_corridor_alerted(mint, 0)
+                print(f"[VERCEL-ALERT] 🚀 Sinyal MASUK DI AWAL (<$70k) terkirim untuk {safe_name} (${safe_symbol})!", flush=True)
+                return {
+                    "token": f"{safe_name} (${safe_symbol})",
+                    "mint": mint,
+                    "verdict": "ALERT_SENT",
+                    "alert_title": "MASUK DI AWAL",
+                    "corridor": metrics["corridor_name"],
+                    "live_mc": round(live_mc, 0),
+                    "projected_entry_mc": round(early_proj_mc, 0),
+                    "max_safe_entry_mc": early_max_buy_mc,
+                    "target_tp_mc": tp1_mc,
+                    "tp2_mc": tp2_mc,
+                    "tp3_mc": tp3_mc,
+                    "roundtrip_loss_pct": rt_loss_pct,
+                    "est_net_gain_pct": tp1_net_pct,
+                    "reason": (
+                        f"MASUK DI AWAL (<$70k Paus Terverifikasi: {whale_proof_label}) | "
+                        f"Max Beli ${early_max_buy_mc:,.0f} -> TP1 ${tp1_mc:,.0f} / TP2 ${tp2_mc:,.0f} / Moonbag ${tp3_mc:,.0f}+"
+                    )
+                }
+            return {
+                "token": f"{safe_name} (${safe_symbol})",
+                "mint": mint,
+                "verdict": "ALERT_FAILED",
+                "alert_title": "MASUK DI AWAL",
+                "corridor": metrics["corridor_name"],
+                "max_safe_entry_mc": early_max_buy_mc,
+                "target_tp_mc": tp1_mc,
+                "est_net_gain_pct": tp1_net_pct,
+                "reason": detail
+            }
+
+        # Jika gagal verifikasi khusus Paus Awal: hanya boleh lanjut ke jalur standar V3.0 jika koin memang
+        # lolos mandiri aturan standar V3.0 DAN bukan karena sudah pernah gagal menabrak tembok $100k!
+        std_fallback = metrics.get("std_fallback_metrics")
+        if not std_fallback or (ew_meta or {}).get("failed_100k_wall"):
+            return {
+                "token": f"{name} (${symbol})",
+                "mint": mint,
+                "verdict": "SKIP",
+                "reason": ew_reason
+            }
+        metrics = std_fallback
+
     projected_entry_mc = live_mc * (1.0 + (metrics["est_delay_drift_pct"] / 100.0))
     tp_mc = float(metrics["target_tp_mc"])
     corridor_max_mc = float(metrics["corridor_max_mc"])
@@ -1499,7 +1913,6 @@ def audit_and_dispatch_candidate(
             "reason": f"Proyeksi MC saat klik di Telegram (${projected_entry_mc:,.0f}) sudah keluar batas aman lorong (${corridor_max_mc:,.0f})"
         }
 
-    total_friction_pct = round(rt_loss_pct + PRIORITY_TIP_BUFFER_PCT, 2)
     gross_from_projected_pct = ((tp_mc - projected_entry_mc) / projected_entry_mc) * 100.0
     net_from_projected_pct = round(gross_from_projected_pct - total_friction_pct, 1)
 
@@ -1516,8 +1929,6 @@ def audit_and_dispatch_candidate(
     max_safe_entry_mc = round(min(corridor_max_mc, max_mc_for_min_profit), 0)
     cut_loss = metrics["cut_loss_pct"]
 
-    safe_name = _esc_md(name)
-    safe_symbol = _esc_md(symbol)
     moonbag_note = (
         f"🌕 *Strategi Cult Mega-Runner ($10M-$50M+):* Ambil `70%` modal+untung di `${tp_mc:,.0f}` & biarkan `30% Free Moonbag` kawal terbang ke `$20M-$50M+`!\n"
         if int(metrics.get("corridor_id", 0)) >= 4
@@ -1525,7 +1936,7 @@ def audit_and_dispatch_candidate(
     )
 
     alert_msg = (
-        f"🎯 *[CORRIDOR SNIPER V3.0: UNIFIED 16-MODUS ANTI-BOT]*\n\n"
+        f"🎯 *[CORRIDOR SNIPER V3.1: UNIFIED 16-MODUS ANTI-BOT]*\n\n"
         f"🪙 *Token:* {safe_name} (`${safe_symbol}`)\n"
         f"📍 *Mint:* `{mint}`\n"
         f"🛤️ *Posisi:* `{metrics['corridor_name']}`\n\n"
@@ -1550,11 +1961,12 @@ def audit_and_dispatch_candidate(
     sent, detail = send_telegram_direct(bot_tok, chat_id, alert_msg)
     if sent:
         _mark_corridor_alerted(mint, int(metrics.get("corridor_id", 0)))
-        print(f"[VERCEL-ALERT] 🚀 Sinyal V2 Delay-Proof terkirim untuk {safe_name} (${safe_symbol})!", flush=True)
+        print(f"[VERCEL-ALERT] 🚀 Sinyal V3.1 Delay-Proof terkirim untuk {safe_name} (${safe_symbol})!", flush=True)
         return {
             "token": f"{safe_name} (${safe_symbol})",
             "mint": mint,
             "verdict": "ALERT_SENT",
+            "alert_title": "CORRIDOR SNIPER V3.1",
             "corridor": metrics["corridor_name"],
             "live_mc": round(live_mc, 0),
             "projected_entry_mc": round(projected_entry_mc, 0),
@@ -1563,7 +1975,7 @@ def audit_and_dispatch_candidate(
             "roundtrip_loss_pct": rt_loss_pct,
             "est_net_gain_pct": net_from_projected_pct,
             "reason": (
-                f"Lolos V2 ({metrics['corridor_name']}) | Max Entry ${max_safe_entry_mc:,.0f} -> "
+                f"Lolos V3.1 ({metrics['corridor_name']}) | Max Entry ${max_safe_entry_mc:,.0f} -> "
                 f"TP ${tp_mc:,.0f} (+{net_from_projected_pct}% bersih setelah delay {int(PIPELINE_REACTION_DELAY_SEC)}s & fee riil)"
             )
         }
@@ -1571,6 +1983,7 @@ def audit_and_dispatch_candidate(
         "token": f"{safe_name} (${safe_symbol})",
         "mint": mint,
         "verdict": "ALERT_FAILED",
+        "alert_title": "CORRIDOR SNIPER V3.1",
         "corridor": metrics["corridor_name"],
         "max_safe_entry_mc": max_safe_entry_mc,
         "target_tp_mc": tp_mc,
@@ -1579,8 +1992,31 @@ def audit_and_dispatch_candidate(
     }
 
 
+def _select_dual_track_candidate(best_pair: dict, pair_count: int = 1, boost_amount: int = 0) -> tuple[bool, str, dict]:
+    """
+    Orkestrator Dual-Track V3.1:
+    - Jalur 1: Cek apakah koin <$70k ($28k-$66k spot) memenuhi syarat ketat "MASUK DI AWAL" (Paus Pompa Dini).
+    - Jalur 2: Seluruh filter standar V3.0 (Lorong 0 s/d 5 + 16 Modus Anti-Bot) tetap berjalan 100% utuh!
+    """
+    pair_boost = int(((best_pair.get("boosts") or {}).get("active")) or 0)
+    effective_boost = max(int(boost_amount or 0), pair_boost)
+
+    std_ok, std_reason, std_metrics = evaluate_market_candidate(
+        best_pair, pair_count=pair_count, boost_amount=effective_boost
+    )
+    mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
+    if EARLY_WHALE_MIN_MC <= mc <= EARLY_WHALE_MAX_SPOT_MC:
+        ew_ok, _, ew_metrics = evaluate_early_whale_candidate(
+            best_pair, pair_count=pair_count, boost_amount=effective_boost
+        )
+        if ew_ok:
+            ew_metrics["std_fallback_metrics"] = std_metrics if std_ok else None
+            return True, "LOLOS TAHAP 1 MASUK DI AWAL", ew_metrics
+    return std_ok, std_reason, std_metrics
+
+
 def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
-    """Helper evaluasi 1 token mandiri (kompatibel penuh untuk pemanggilan satuan)."""
+    """Helper evaluasi 1 token mandiri (mendukung penuh Dual-Track V3.1: Masuk di Awal <$70k + Corridor V3.0)."""
     dex_data = fetch_json(f"https://api.dexscreener.com/latest/dex/tokens/{mint}", timeout=3.0)
     if not dex_data or not dex_data.get("pairs"):
         return {"mint": mint, "token": mint[:8], "verdict": "SKIP", "reason": "Data pair DexScreener kosong"}
@@ -1604,7 +2040,7 @@ def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
     name = best_pair.get("baseToken", {}).get("name", "Unknown")
     symbol = best_pair.get("baseToken", {}).get("symbol", "SOL")
 
-    ok, filter_reason, metrics = evaluate_market_candidate(
+    ok, filter_reason, metrics = _select_dual_track_candidate(
         best_pair, pair_count=active_pools_count, boost_amount=boost_amount
     )
     if not ok:
@@ -1628,17 +2064,34 @@ def _extract_gt_solana_mints(gt_payload) -> list:
     return out
 
 
+def _fetch_dex_solana_batch(mint_chunk: list) -> list:
+    """
+    Tarik batch <=30 mint via endpoint resmi /tokens/v1/solana/ (mengembalikan 30/30 token utuh tanpa
+    terpotong batas 30-pair milik endpoint lawas /latest/dex/tokens/), lengkap dengan fallback otomatis!
+    """
+    if not mint_chunk:
+        return []
+    joined = ",".join(mint_chunk)
+    v1_res = fetch_json(f"https://api.dexscreener.com/tokens/v1/solana/{joined}", timeout=3.2)
+    if isinstance(v1_res, list) and v1_res:
+        return v1_res
+    legacy_res = fetch_json(f"https://api.dexscreener.com/latest/dex/tokens/{joined}", timeout=3.2)
+    if isinstance(legacy_res, dict) and legacy_res.get("pairs"):
+        return legacy_res["pairs"]
+    return []
+
+
 def run_live_market_scan(engine, config) -> dict:
     """
-    FAST-TIME BATCH MULTI-FEED SCANNER V2.7 (60 KANDIDAT PARALEL < 1.0 - 2.0 DETIK):
-    1. Tarik paralel 7 radar (GeckoTerminal Trending 5m Page 1 & 2 = 40 pool terpanas + GT 1h + Organic PumpSwap + Boosts/Profiles)
-       sehingga roket organik baru TANPA Boost ($Marvin jam 09:35), CTO multi-hari ($Macca), & Cult $1M->$50M+ ($PONS/$STONK) langsung tertangkap!
-    2. Ambil data pair seluruh kandidat dalam 2 chunk paralel <=30 mint (~250ms total, 0ms penalti sekuensial!).
-    3. Saring di RAM (< 1ms) dengan Lorong 0-5 + Wave-1 Ignition + Anti Post-Climax Aftermath + Proyeksi Delay 22s.
-    4. Kandidat elit diaudit 3-arah paralel: RugCheck + Round-Trip Jupiter (0.1 & 1.0 SOL) + Real OHLCV ATH Bull-Trap Shield!
+    FAST-TIME BATCH MULTI-FEED SCANNER V3.1 (DUAL-TRACK: MASUK DI AWAL <$70K + CORRIDOR V3.0):
+    1. Tarik paralel 7 radar aman rate-limit (GT Trending 5m Page 1 & 2 = 40 pool terpanas + Priority Latest Boosts +
+       Profiles + Organic PumpSwap + GT 1h + Top Boosts).
+    2. Ambil data pair seluruh kandidat via /tokens/v1/solana/ paralel (~250ms, 100% tanpa pemotongan pair!).
+    3. Saring di RAM (< 1ms) dengan Dual-Track V3.1 ("MASUK DI AWAL" <$70k + Lorong 0-5 V3.0 utuh).
+    4. Kandidat elit diaudit 3-arah paralel: RugCheck + Round-Trip Jupiter (0.1 & 1.0 SOL) + 5m OHLCV Shield!
     """
     t0 = time.time()
-    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V2.7 7-Feed Delay-Compensated Scan...", flush=True)
+    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V3.1 Dual-Track Scan (Masuk di Awal <$70k + Corridor V3.0)...", flush=True)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=7) as feed_exec:
         f_gt_5m_p1 = feed_exec.submit(
@@ -1665,13 +2118,38 @@ def run_live_market_scan(engine, config) -> dict:
 
     ordered_mints = []
     boost_map = {}
+    latest_boost_mints = []
+    top_boost_mints = []
+    profile_mints = []
 
-    # 1. Prioritaskan 40 pool organik terpanas 5m & 20 pool 1h di Solana (Tanpa perlu beli Boost!)
+    if isinstance(boosts_latest, list):
+        for b in boosts_latest:
+            if b.get("chainId") == "solana" and b.get("tokenAddress"):
+                addr = b["tokenAddress"]
+                amt = int(b.get("totalAmount") or b.get("amount") or 0)
+                boost_map[addr] = max(boost_map.get(addr, 0), amt)
+                latest_boost_mints.append(addr)
+
+    if isinstance(boosts_top, list):
+        for b in boosts_top:
+            if b.get("chainId") == "solana" and b.get("tokenAddress"):
+                addr = b["tokenAddress"]
+                amt = int(b.get("totalAmount") or b.get("amount") or 0)
+                boost_map[addr] = max(boost_map.get(addr, 0), amt)
+                top_boost_mints.append(addr)
+
+    if isinstance(profiles, list):
+        for p in profiles:
+            if p.get("chainId") == "solana" and p.get("tokenAddress"):
+                profile_mints.append(p["tokenAddress"])
+
+    # Urutan Prioritas Presisi V3.1 agar koin Paus Baru Bayar Boost (<$70k) & 40 Pool Trending 5m TIDAK PERNAH terpotong!
     ordered_mints.extend(_extract_gt_solana_mints(gt_5m_p1))
+    ordered_mints.extend(latest_boost_mints[:18])
     ordered_mints.extend(_extract_gt_solana_mints(gt_5m_p2))
-    ordered_mints.extend(_extract_gt_solana_mints(gt_1h))
+    ordered_mints.extend(profile_mints[:12])
 
-    # 2. Koin organik PumpSwap di rentang Lorong ($25k-$8.8M termasuk Cult Runner >$1M)
+    # Koin organik PumpSwap di rentang Lorong ($25k-$8.8M termasuk Masuk di Awal <$70k & Cult Runner >$1M)
     if isinstance(organic_search, dict):
         for op in (organic_search.get("pairs") or []):
             if op.get("chainId") == "solana":
@@ -1681,19 +2159,10 @@ def run_live_market_scan(engine, config) -> dict:
                 if op_addr and 25_000.0 <= op_mc <= 8_800_000.0 and op_vol5 >= 1500.0:
                     ordered_mints.append(op_addr)
 
-    for feed in (boosts_latest, boosts_top):
-        if isinstance(feed, list):
-            for b in feed:
-                if b.get("chainId") == "solana" and b.get("tokenAddress"):
-                    addr = b["tokenAddress"]
-                    amt = int(b.get("totalAmount") or b.get("amount") or 0)
-                    boost_map[addr] = max(boost_map.get(addr, 0), amt)
-                    ordered_mints.append(addr)
-
-    if isinstance(profiles, list):
-        for p in profiles:
-            if p.get("chainId") == "solana" and p.get("tokenAddress"):
-                ordered_mints.append(p["tokenAddress"])
+    ordered_mints.extend(_extract_gt_solana_mints(gt_1h))
+    ordered_mints.extend(latest_boost_mints[18:])
+    ordered_mints.extend(top_boost_mints)
+    ordered_mints.extend(profile_mints[12:])
 
     seen = set()
     candidate_mints = []
@@ -1713,22 +2182,18 @@ def run_live_market_scan(engine, config) -> dict:
             "evaluations": []
         }
 
-    # PARALLEL CHUNKED BATCH REQUEST (<=30 mints per DexScreener call, dieksekusi paralel ~250ms total!)
+    # PARALLEL CHUNKED BATCH REQUEST VIA /tokens/v1/solana/ (30/30 mints utuh, ~250ms total!)
     chunks = [candidate_mints[i:i + 30] for i in range(0, len(candidate_mints), 30)]
     all_pairs = []
     if len(chunks) == 1:
-        batch_dex = fetch_json(f"https://api.dexscreener.com/latest/dex/tokens/{','.join(chunks[0])}", timeout=3.2)
-        all_pairs = (batch_dex or {}).get("pairs") or []
+        all_pairs = _fetch_dex_solana_batch(chunks[0])
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(chunks)) as batch_exec:
-            batch_futures = [
-                batch_exec.submit(fetch_json, f"https://api.dexscreener.com/latest/dex/tokens/{','.join(ch)}", 3.2)
-                for ch in chunks
-            ]
+            batch_futures = [batch_exec.submit(_fetch_dex_solana_batch, ch) for ch in chunks]
             for bf in batch_futures:
                 res_b = bf.result()
-                if isinstance(res_b, dict) and res_b.get("pairs"):
-                    all_pairs.extend(res_b["pairs"])
+                if res_b:
+                    all_pairs.extend(res_b)
 
     pairs_by_mint = {}
     for p in all_pairs:
@@ -1742,7 +2207,7 @@ def run_live_market_scan(engine, config) -> dict:
     stage2_jobs = []
     active_ledger = _load_corridor_ledger()
 
-    # TAHAP 1 (In-Memory ~0.2ms): Saring seluruh 25 kandidat dengan Corridor & Proyeksi Delay 22s
+    # TAHAP 1 (In-Memory ~0.2ms): Saring seluruh kandidat dengan Dual-Track V3.1 ("MASUK DI AWAL" <$70k + Corridor V3.0)
     for m in candidate_mints:
         m_pairs = pairs_by_mint.get(m)
         if not m_pairs:
@@ -1759,7 +2224,7 @@ def run_live_market_scan(engine, config) -> dict:
         t_name = best_p.get("baseToken", {}).get("name", "Unknown")
         t_sym = best_p.get("baseToken", {}).get("symbol", "SOL")
 
-        ok, reason, metrics = evaluate_market_candidate(
+        ok, reason, metrics = _select_dual_track_candidate(
             best_p, pair_count=active_cnt, boost_amount=boost_map.get(m, 0)
         )
         if not ok:
@@ -1860,7 +2325,7 @@ class handler(BaseHTTPRequestHandler):
             chat_id = getattr(config, "TELEGRAM_CHAT_ID", None) or os.getenv("TELEGRAM_CHAT_ID")
             ledger = _load_corridor_ledger()
             response_data = {
-                "service": "Corridor Sniper V3.0 — Unified 16-Modus Anti-Bot Matrix, Wave-1 & Cult Mega-Runner",
+                "service": "Corridor Sniper V3.1 — Dual-Track: MASUK DI AWAL (<$70K Whale Pump) + Unified 16-Modus Anti-Bot Matrix",
                 "status": "healthy",
                 "python_version": sys.version.split()[0],
                 "engine_loaded": engine is not None,
@@ -1871,6 +2336,7 @@ class handler(BaseHTTPRequestHandler):
                 "active_corridor_cooldowns": len(ledger),
                 "parameters": {
                     "batch_candidate_limit": BATCH_CANDIDATE_LIMIT,
+                    "early_whale_max_buy_mc_usd": EARLY_WHALE_MAX_BUY_MC,
                     "pipeline_reaction_delay_sec": PIPELINE_REACTION_DELAY_SEC,
                     "max_roundtrip_loss_pct": MAX_ROUNDTRIP_LOSS_PCT,
                     "max_depth_1sol_cliff_pct": MAX_DEPTH_CLIFF_LOSS_PCT,
@@ -1928,13 +2394,11 @@ class handler(BaseHTTPRequestHandler):
                 }
             else:
                 test_msg = (
-                    "🔔 *[CORRIDOR SNIPER V2: DELAY-PROOF & ROUND-TRIP AKTIF]*\n\n"
-                    "✅ Mesin Batch 25-Token Berkecepatan Tinggi terhubung ke Telegram!\n\n"
-                    "Perlindungan Eksekusi V2:\n"
-                    "1. ⏱️ *22s Delay Projection:* Menghitung pergerakan harga selama jeda scan -> Telegram -> klik jari Anda, lengkap dengan `🚧 BATAS MAKSIMAL BOLEH BELI`.\n"
-                    "2. 🔄 *0.1 SOL Round-Trip Swap:* Simulasi Beli -> Jual nyata di slot terbaru Jupiter untuk memblokir Honeypot Jual, Pajak Token-2022, & Kolam DLMM Kosong.\n"
-                    "3. 📡 *Live Slot Drift Guard:* Menangkap live rug 5 detik terakhir yang belum terlihat di cache DexScreener.\n"
-                    "4. 🛡️ *Anti-Cabal & Saldo Dev <= 2.5%:* Memastikan dev sudah keluar, kolam berisi uang SOL asli >= 32%, dan bebas sindikat Micro-Split."
+                    "🔔 *[CORRIDOR SNIPER V3.1: DUAL-TRACK MASUK DI AWAL (<$70K) & 16-MODUS ANTI-BOT AKTIF]*\n\n"
+                    "✅ Mesin Dual-Track 75-Token Berkecepatan Tinggi terhubung ke Telegram!\n\n"
+                    "Dua Jenis Judul Alert yang Kini Aktif:\n"
+                    "1. 🚀 *MASUK DI AWAL:* Khusus koin perawan `< $70k` (usia `3.5-35m`) yang terbukti dipompa Paus/Modal Hangus Besar (Boost dini / Tiket Paus `$55+`, LP `>=16%`, Backing `>=40%`, Deployer bersih `<=3 token`, lantai candle naik).\n"
+                    "2. 🎯 *CORRIDOR SNIPER V3.1:* Seluruh Lorong 0–5 (`$25k` s/d `$8.8M`) lengkap dengan Perisai Terpadu 16 Modus Anti-Bot."
                 )
                 ok, detail = send_telegram_direct(bot_token, chat_id, test_msg)
                 response_data = {
@@ -1991,12 +2455,13 @@ class handler(BaseHTTPRequestHandler):
         elif action == "scan" or is_cron:
             scan_summary = run_live_market_scan(engine, config)
             response_data = {
-                "service": "Corridor Sniper V3.0 — Unified 16-Modus Anti-Bot Matrix, Wave-1 & Cult Mega-Runner Radar",
+                "service": "Corridor Sniper V3.1 — Dual-Track MASUK DI AWAL (<$70K Whale Pump) + Unified 16-Modus Anti-Bot Radar",
                 "status": "ready",
                 "is_cron_call": is_cron,
                 "timestamp": time.time(),
                 "scan_result": scan_summary,
                 "corridor_architecture": {
+                    "special_track_masuk_di_awal": "$28k - $68.5k (Max Klik < $70k) -> Judul Alert 'MASUK DI AWAL' (Khusus Paus/Sunk-Cost Terverifikasi, Naik Dulu Sebelum Distribusi)",
                     "corridor_0": "$25k - $78k -> TP <= $90k (Front-run tembok $100k)",
                     "deadzone_1_blocked": "$78k - $128k (Tembok Sniper $100k DIBLOKIR)",
                     "corridor_1": "$128k - $168k -> TP <= $190k (Front-run tembok $200k)",
@@ -2011,11 +2476,11 @@ class handler(BaseHTTPRequestHandler):
                     "deadzone_6_blocked": "> $8.80M (Area Late-Stage Dekat $10M+ DIBLOKIR, Kawal via Moonbag)"
                 },
                 "execution_and_delay_shields": [
-                    "Unified 16-Modus Anti-Bot Matrix V3.0 (Wash-Peg, Barcode/Doji, Staircase, Bait-Slam, Asymmetric Siphon, Jito Self-Swap, Nano-Swarm, Serial Factory Dev)",
-                    "7-Feed Parallel Discovery (GT 5m Page 1&2 = 40 Hot Pools + GT 1h + PumpSwap + Boosts) 60-Mint (~0.8-1.8 detik)",
+                    "Jalur Khusus 'MASUK DI AWAL' (<$70K): Wajib Sunk-Cost Boost Dini / Tiket Paus $55+, LP >=16%, Hard Backing >=40%, Deployer <=3 Token, Virgin Chart <$76k & Rising Floor",
+                    "Unified 16-Modus Anti-Bot Matrix V3.0 Tetap Aktif 100% (Wash-Peg, Barcode/Doji, Staircase, Bait-Slam, Asymmetric Siphon, Jito Self-Swap, Nano-Swarm, Serial Factory Dev)",
+                    "8-Feed Parallel Discovery (GT 5m Page 1-3 = 60 Hot Pools + Priority Latest Boosts + GT 1h + PumpSwap) 75-Mint (~0.8-1.9 detik)",
                     "Universal Jupiter swapUsdValue Live Drift & Dual-Depth 0.1 + 1.0 SOL Round-Trip (Termasuk pool $PUMP / TTWO / WBTC)",
-                    "Wave-1 Hyper-Ignition & Active Waterfall + Post-ATH Bull-Trap Shield ($Marvin 10 AM Pre-Peak Caught & 1 PM Trap Blocked)",
-                    "Post-$1M Cult Corridors (Lorong 4 & 5) + Multi-Day CTO ($Macca) dengan 30% Free Moonbag ($50M+)"
+                    "Wave-1 Hyper-Ignition, CTO Multi-Hari ($Macca), & Post-$1M Cult Corridors ($PONS/$STONK) dengan Free Moonbag"
                 ]
             }
 
