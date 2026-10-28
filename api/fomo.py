@@ -632,6 +632,9 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         else c_cfg["min_cum_tx"]
     )
     effective_min_cum_tx = int(base_min_cum_tx * 0.60) if chain_id_s1 in ("bsc", "base", "ethereum") else base_min_cum_tx
+    _tx_h1_tmp = (best_pair.get("txns") or {}).get("h1") or {}
+    _tx_m5_tmp = (best_pair.get("txns") or {}).get("m5") or {}
+    cum_tx_24h = max(cum_tx_24h, int(_tx_h1_tmp.get("buys") or 0) + int(_tx_h1_tmp.get("sells") or 0), int(_tx_m5_tmp.get("buys") or 0) + int(_tx_m5_tmp.get("sells") or 0))
     if cum_tx_24h < effective_min_cum_tx:
         return (
             False,
@@ -1240,16 +1243,37 @@ def analyze_holders_and_lp_lock(
     insider_count = sum(1 for x in pure_holdings[:15] if x.get("insider"))
     total_holders = int(rug_data.get("totalHolders") or 0)
 
-    # V3.0 + V3.2 (#23): Anti-Serial-Factory Rugger (>=12 token) & Petani Kelulusan Sub-$100K (>=5 token)
+    # V3.8 (Modus #35 — Kasus Nyata $Grokbot 6NaM98...pump): Hitung SPL Supply Burn pada koin 1B standar Solana!
+    supply_ui = (supply_raw / float(10 ** decimals)) if supply_raw > 0.0 else 0.0
+    spl_burned_pct = 0.0
+    if 400_000_000.0 <= supply_ui < 999_000_000.0 and (str(token_mint or "").endswith("pump") or decimals == 6):
+        spl_burned_pct = round(((1_000_000_000.0 - supply_ui) / 1_000_000_000.0) * 100.0, 2)
+
+    # Deteksi Pengambilalihan Komunitas Murni (Verified Post-Dev-Exit CTO):
+    # Dev 100% sudah keluar (<=0.10%), LP Lock >=98%, distribusi rata tanpa paus penampung (max <=3.5%, top10 <=20.5%),
+    # serta komunitas masif sudah terbentuk (>=450 holders di MC >=$100k, atau >=280 holders dengan SPL Burn >=5%!).
+    is_verified_cto_takeover = bool(
+        creator_pct <= 0.10
+        and primary_lp_locked_pct >= 98.0
+        and max_single_pure <= 3.5
+        and top10_pure_pct <= 20.5
+        and (
+            (mc_usd >= 100_000.0 and total_holders >= 450)
+            or (spl_burned_pct >= 5.0 and total_holders >= 280)
+        )
+    )
+
+    # V3.0 + V3.2 (#23) + V3.8 (#35A): Anti-Serial-Factory Rugger (>=12 token) & Petani Kelulusan Sub-$100K (>=5 token)
+    # KECUALI koin terbukti 100% sudah ditinggal dev (0%), dibakar, & diambil alih ratusan/ribuan holder CTO!
     creator_tokens_cnt = len(rug_data.get("creatorTokens") or [])
-    if creator_tokens_cnt >= 12 and not (mc_usd >= 1_080_000.0 and total_holders >= 2500):
+    if creator_tokens_cnt >= 12 and not (is_verified_cto_takeover or (mc_usd >= 1_080_000.0 and total_holders >= 2500)):
         return (
             False,
             f"Terdeteksi Serial Rugger / Pabrik Koin Dev: Dompet pembuat tercatat sudah meluncurkan {creator_tokens_cnt} token berbeda!",
             {}
         )
     if 25_000.0 <= mc_usd < 100_000.0:
-        if creator_tokens_cnt >= 5:
+        if creator_tokens_cnt >= 5 and not is_verified_cto_takeover:
             return (
                 False,
                 f"Terdeteksi Petani Kelulusan / Serial Farmer Dev (<$100k): Dompet pembuat sudah meluncurkan "
@@ -1452,27 +1476,31 @@ def analyze_holders_and_lp_lock(
                 {}
             )
 
-    heavy_holders = [x["pct"] for x in pure_holdings[:15] if 2.40 <= x["pct"] <= 4.60]
-    for p_ref in heavy_holders:
-        heavy_cluster = [p for p in heavy_holders if abs(p - p_ref) <= 0.04]
-        if len(heavy_cluster) >= 3:
-            return (
-                False,
-                f"Heavy Splitter Cabal: {len(heavy_cluster)} paus memegang porsi kembar (~{p_ref:.2f}%, total {sum(heavy_cluster):.1f}%)",
-                {}
-            )
+    # Kalibrasi Presisi V3.9 (Kasus Nyata $INVERSE 2gLhk8...Zfiw 2.74%, 2.72%, 2.70% -> $810K MC & 10.165 Holders):
+    # Hanya blokir jika dompet kloningan mesin benar-benar identik (selisih <= 0.012%) dan bukan komunitas besar (>=1.200 holders Dev 0%)!
+    if total_holders < 1200 or creator_pct > 0.10:
+        heavy_holders = [x["pct"] for x in pure_holdings[:15] if 2.40 <= x["pct"] <= 4.60]
+        for p_ref in heavy_holders:
+            heavy_cluster = [p for p in heavy_holders if abs(p - p_ref) <= 0.012]
+            if len(heavy_cluster) >= 3:
+                return (
+                    False,
+                    f"Heavy Splitter Cabal: {len(heavy_cluster)} paus memegang porsi kembar identik (~{p_ref:.2f}%, total {sum(heavy_cluster):.1f}%)",
+                    {}
+                )
 
-    # Deteksi Sindikat Micro-Split CEX (Dompet Kloningan Presisi di Top 20: >= 5 dompet selisih <= 0.03%)
-    micro_tol = 0.03 if (total_holders == 0 or total_holders < 1800) else 0.008
-    micro_holders = [x["pct"] for x in pure_holdings[:20] if 0.65 <= x["pct"] < 1.20]
-    for p_ref in micro_holders:
-        m_cluster = [p for p in micro_holders if abs(p - p_ref) <= micro_tol]
-        if len(m_cluster) >= 5:
-            return (
-                False,
-                f"Micro-Split CEX Syndicate: {len(m_cluster)} dompet memegang persentase kloningan identik (~{p_ref:.2f}%)",
-                {}
-            )
+    # Deteksi Sindikat Micro-Split CEX (Bebaskan komunitas raksasa >=2.500 holders dengan Dev 0% seperti $Something $757K MC)
+    if total_holders < 2500 or creator_pct > 0.10:
+        micro_tol = 0.03 if (total_holders == 0 or total_holders < 1800) else 0.008
+        micro_holders = [x["pct"] for x in pure_holdings[:20] if 0.65 <= x["pct"] < 1.20]
+        for p_ref in micro_holders:
+            m_cluster = [p for p in micro_holders if abs(p - p_ref) <= micro_tol]
+            if len(m_cluster) >= 5:
+                return (
+                    False,
+                    f"Micro-Split CEX Syndicate: {len(m_cluster)} dompet memegang persentase kloningan identik (~{p_ref:.2f}%)",
+                    {}
+                )
 
     return True, "Distribusi Bersih & LP Aman", {
         "decimals": decimals,
@@ -1484,7 +1512,9 @@ def analyze_holders_and_lp_lock(
         "lp_locked_pct": primary_lp_locked_pct,
         "sol_backing_ratio": sol_backing_ratio,
         "primary_hard_usd": round(primary_hard_usd, 1),
-        "total_holders": total_holders
+        "total_holders": total_holders,
+        "burned_pct": spl_burned_pct,
+        "is_verified_cto_takeover": is_verified_cto_takeover,
     }
 
 
@@ -1719,6 +1749,83 @@ def analyze_evm_goplus_security(
 
 
 
+
+
+def evaluate_sub100k_inevitable_100k_breakout(
+    best_pair: dict,
+    rug_data: dict | None,
+    holder_meta: dict | None,
+    ohlcv_payload,
+    live_mc: float,
+    liq_usd: float,
+) -> dict:
+    """
+    MODUS #36 (V3.9 — DETEKTOR DNA "PASTI TEMBUS $100K -> RUNNER $400K+" DARI BAWAH MC $100K):
+    Disarikan dari bedah empiris lintas-runner >$400K-$2.5M ($INVERSE 2gLhk8...Zfiw $43.7K->$810K,
+    $Nothing $44K->$1.52M, Giggle Academy $41K->$704K, $JOB $2.50M, $Something $757K):
+    Mengukur 5 Sinyal Fisika Pasar yang membuktikan sebuah koin di bawah $100K TIDAK MUNGKIN berhenti di <$100K:
+    1. Velocity Escape: Perputaran Vol 5m >= 22% dari MC (uang deras masuk melebihi kapasitas tampung <$100K).
+    2. Expanding Green Momentum & Higher-Low >= 1.20x lantai pembukaan (tidak pernah balik ke harga lahir).
+    3. Zero-Dev Virgin / Burned Supply: Saldo dev 0% (<=0.05%) & pembuat bersih (0 riwayat rug) + LP Lock >= 98%.
+    4. Paid CMS Infrastructure ($299 Header DexScreener + Domain Website Asli + X Resmi) sudah aktif di MC <$100K!
+    5. Multi-Pool Arbitrage Magnet: Muncul pool pendamping (mis. Meteora DLMM / Raydium) atau rasio Buy/Sell >= 1.60x.
+    """
+    if live_mc <= 0.0 or live_mc >= 100_000.0:
+        return {"is_inevitable_100k": False, "signals_count": 0, "signals": []}
+
+    rug_d = rug_data if isinstance(rug_data, dict) else {}
+    h_meta = holder_meta if isinstance(holder_meta, dict) else {}
+    vol_m5 = float(((best_pair or {}).get("volume") or {}).get("m5") or 0.0)
+    txns_m5 = ((best_pair or {}).get("txns") or {}).get("m5") or {}
+    b_m5, s_m5 = int(txns_m5.get("buys") or 0), int(txns_m5.get("sells") or 0)
+    bs_ratio = b_m5 / float(max(1, s_m5))
+
+    signals = []
+
+    # Sinyal 1: Velocity Escape (Vol 5m >= 22% MC & Buy/Sell >= 1.45x)
+    vel_turnover = vol_m5 / live_mc
+    if vel_turnover >= 0.22 and bs_ratio >= 1.45:
+        signals.append(f"Velocity Escape (Vol 5m {vel_turnover*100:.0f}% MC · {bs_ratio:.2f}x Buy)")
+
+    # Sinyal 2: Higher-Low >= 1.20x Lantai Lahir & Ekspansi Volume Hijau (seperti $INVERSE $37.1K -> $51.8K & Vol $24.4K -> $33.4K)
+    candles = []
+    if isinstance(ohlcv_payload, dict):
+        raw_list = ((ohlcv_payload.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+        candles = [r for r in raw_list if isinstance(r, (list, tuple)) and len(r) >= 6 and float(r[3] or 0.0) > 0.0]
+        candles.sort(key=lambda x: float(x[0] or 0.0))
+    if len(candles) >= 2:
+        first_l = float(candles[0][3] or 0.0)
+        last_l = float(candles[-1][3] or 0.0)
+        prev_v, last_v = float(candles[-2][5] or 0.0), float(candles[-1][5] or 0.0)
+        last_green = float(candles[-1][4] or 0.0) >= float(candles[-1][1] or 0.0)
+        if first_l > 0.0 and last_l >= (first_l * 1.20) and last_green:
+            exp_note = " + Ekspansi Vol" if last_v >= (prev_v * 1.02) else ""
+            signals.append(f"Lantai Higher-Low {last_l/first_l:.2f}x Di Atas Lahir{exp_note}")
+
+    # Sinyal 3: Dev 0.00% Saldo + Deployer Perawan (0 token sebelumnya) + LP Lock >= 98% / Renounced
+    creator_pct = float(h_meta.get("creator_pct") or 0.0)
+    creator_toks = len(rug_d.get("creatorTokens") or [])
+    lp_locked = float(h_meta.get("lp_locked_pct") or 0.0)
+    is_renounced = bool(h_meta.get("is_renounced"))
+    if creator_pct <= 0.05 and creator_toks == 0 and (lp_locked >= 98.0 or is_renounced):
+        signals.append("Deployer Perawan (0 Riwayat Rug, 0% Saldo Dev, LP 99%+ Terkunci)")
+
+    # Sinyal 4: Infrastruktur Proyek Serius Sejak <$100K ($299 Header CMS + Website Domain + Sosmed)
+    info = (best_pair or {}).get("info") or {}
+    has_header = bool(info.get("header"))
+    has_web = bool(info.get("websites") or [])
+    has_soc = bool(info.get("socials") or [])
+    if has_header and has_web and has_soc:
+        signals.append("Infrastruktur Penuh <$100K (Paid Header + Domain Web + X)")
+
+    is_inevitable = len(signals) >= 3
+    return {
+        "is_inevitable_100k": is_inevitable,
+        "signals_count": len(signals),
+        "signals": signals[:3],
+    }
+
+
 def verify_sub100k_dev_deterrence(
     best_pair: dict,
     rug_data: dict | None,
@@ -1750,7 +1857,8 @@ def verify_sub100k_dev_deterrence(
     h_meta = holder_meta if isinstance(holder_meta, dict) else {}
 
     creator_tokens_cnt = len(rug_d.get("creatorTokens") or []) or int(h_meta.get("creator_tokens_cnt") or 0)
-    if creator_tokens_cnt > 3:
+    is_cto_sub100k = bool(h_meta.get("is_verified_cto_takeover"))
+    if creator_tokens_cnt > 3 and not is_cto_sub100k:
         return (
             False,
             f"MODUS #34 (Dev Pabrik Koin <$100K): Deployer sudah pernah membuat {creator_tokens_cnt} koin (>3) -> "
@@ -1814,7 +1922,16 @@ def verify_sub100k_dev_deterrence(
         if max_h > ref_price:
             est_peak_mc = live_mc * (max_h / ref_price)
             drop_from_peak = ((max_h - ref_price) / max_h) * 100.0
-            if est_peak_mc >= 82_000.0 and drop_from_peak >= 20.0:
+            # Pengecualian presisi untuk Dasar CTO Pasca-Dev-Exit (<$100K): Dev 0%, Burn >=5%, >=280 holders,
+            # puncak lama >=5 candle lalu, dan 3 candle terakhir mencetak Higher-Low (Seller Exhaustion seperti $Grokbot $56.6K->$77.5K)!
+            cto_bottom_reclaim = False
+            if is_cto_sub100k and len(candles) >= 6:
+                pk_i = max(range(len(candles)), key=lambda k: float(candles[k][2] or 0.0))
+                c3_lows = [float(r[3] or 0.0) for r in candles[-3:]]
+                if pk_i <= (len(candles) - 5) and c3_lows[0] > 0 and c3_lows[0] <= c3_lows[1] <= c3_lows[2]:
+                    cto_bottom_reclaim = True
+
+            if est_peak_mc >= 82_000.0 and drop_from_peak >= 20.0 and not cto_bottom_reclaim:
                 return (
                     False,
                     f"MODUS #34 (Bekas Mental Tembok $100K): Koin sudah pernah menyentuh ~${est_peak_mc:,.0f} lalu dibanting -{drop_from_peak:.0f}%!",
@@ -2033,7 +2150,10 @@ def classify_early_continuation_dna(
         max_h = max(float(r[2] or 0.0) for r in candles)
         last_c = float(candles[-1][4] or 0.0)
 
-        if age_minutes >= 12.0 and first_open > 0.0 and last_c < (first_open * 0.78) and last_c < (max_h * 0.55):
+        is_cto_dna = bool((holder_meta or {}).get("is_verified_cto_takeover"))
+        min_all_low = min(float(r[3] or 0.0) for r in candles if float(r[3] or 0.0) > 0.0) or first_open
+        cto_reclaiming = is_cto_dna and len(candles) >= 6 and min_all_low > 0.0 and last_c >= (min_all_low * 1.35)
+        if not cto_reclaiming and age_minutes >= 12.0 and first_open > 0.0 and last_c < (first_open * 0.78) and last_c < (max_h * 0.55):
             return (
                 False,
                 "Pasti Tidak Naik Lagi (Broken Launch Floor): Harga jebol di bawah lantai kelulusan awal tanpa serapan paus!",
@@ -2096,7 +2216,11 @@ def classify_early_continuation_dna(
     burned_pct = float((holder_meta or {}).get("burned_pct") or 0.0)
     lp_locked = float((holder_meta or {}).get("lp_locked_pct") or 0.0)
     is_renounced = bool((holder_meta or {}).get("is_renounced"))
-    if creator_pct <= 0.5 and (burned_pct >= 2.0 or lp_locked >= 95.0 or is_renounced):
+    if bool((holder_meta or {}).get("is_verified_cto_takeover")):
+        t_hold = int((holder_meta or {}).get("total_holders") or 0)
+        burn_str = f" + Burn {burned_pct:.1f}%" if burned_pct >= 1.0 else ""
+        reasons.insert(0, f"CTO Terverifikasi (Dev Keluar 0%{burn_str} · {t_hold:,} Holders)")
+    elif creator_pct <= 0.5 and (burned_pct >= 2.0 or lp_locked >= 95.0 or is_renounced):
         burn_note = f" + Burn {burned_pct:.1f}%" if burned_pct >= 1.0 else ""
         reasons.append(f"Suplai Bersih (Dev {creator_pct:.1f}%, Kunci/Renounced{burn_note})")
 
@@ -2145,7 +2269,8 @@ def evaluate_ohlcv_ath_trap(
     current_price_usd: float,
     current_mc_usd: float,
     age_minutes: float,
-    is_hyper_wave1: bool = False
+    is_hyper_wave1: bool = False,
+    is_verified_cto: bool = False,
 ) -> tuple[bool, str, dict]:
     """
     PERISAI V2.7B + V2.8A/B (OHLCV MICROSTRUCTURE, ANTI WASH-PEG BOT, & REAL ATH GUARD):
@@ -2354,7 +2479,31 @@ def evaluate_ohlcv_ath_trap(
     recent_max_vol = max(recent_vols) if recent_vols else 0.0
     vol_vs_peak_ratio = (recent_max_vol / peak_candle_vol) if peak_candle_vol > 0.0 else 1.0
 
-    allow_wave2_reclaim_ath = is_wave2_staircase_reclaim and est_ath_mc <= 320_000.0 and ath_drawdown_pct <= 70.0
+    # MODUS #35B (V3.8 — Pembebasan Jarum Buangan Dev Lama untuk Kebangkitan CTO Murni — Kasus $Grokbot 6NaM98...pump):
+    # Jika koin berstatus Verified CTO (Dev 0% keluar total, LP 100% Lock, ratusan/ribuan holder + Burn),
+    # dan puncak lama terjadi >= 5 candle yang lalu (jarum buang barang dev di awal), sedangkan saat ini harga sudah
+    # bangkit >= +40% dari dasar pasca-buangan dev & menempel puncak lokal kebangkitan CTO (>=88% High 4 bar terakhir),
+    # maka itu adalah Gelombang Kebangkitan CTO yang sah, BUKAN bull-trap distribusi!
+    allow_cto_reclaim_ath = False
+    if is_verified_cto and len(valid_candles) >= 6 and est_ath_mc <= 680_000.0:
+        peak_idx = max(range(len(valid_candles)), key=lambda idx_k: float(valid_candles[idx_k][2] or 0.0))
+        if peak_idx <= (len(valid_candles) - 5):
+            post_peak_bars = valid_candles[peak_idx + 1:]
+            post_dump_low = min(float(r[3] or 0.0) for r in post_peak_bars if float(r[3] or 0.0) > 0.0)
+            local_4 = valid_candles[-4:]
+            local_4_high = max(float(r[2] or 0.0) for r in local_4)
+            cto_g_vol = sum(float(r[5] or 0.0) for r in local_4 if float(r[4] or 0.0) >= float(r[1] or 0.0))
+            cto_r_vol = sum(float(r[5] or 0.0) for r in local_4 if float(r[4] or 0.0) < float(r[1] or 0.0))
+            if (
+                post_dump_low > 0.0
+                and current_price_usd >= (post_dump_low * 1.40)
+                and local_4_high > 0.0
+                and current_price_usd >= (local_4_high * 0.88)
+                and cto_g_vol >= (cto_r_vol * 1.10)
+            ):
+                allow_cto_reclaim_ath = True
+
+    allow_wave2_reclaim_ath = (is_wave2_staircase_reclaim and est_ath_mc <= 320_000.0 and ath_drawdown_pct <= 70.0) or allow_cto_reclaim_ath
     if age_minutes <= 1440.0 and ath_drawdown_pct >= 42.0 and not allow_wave2_reclaim_ath:
         return (
             False,
@@ -2645,13 +2794,27 @@ def audit_and_dispatch_candidate(
             ohlcv_data = f_ohlcv.result()
             goplus_data = None
 
-    # 0. Verifikasi Mikrostruktur 5m (Anti Wash-Peg & Bait-Slam) + Struktur ATH Historis ($Marvin 1 PM Guard)
+    # Pre-check cepat apakah token Solana ini sudah ditinggal Dev 0% & diambil alih komunitas (CTO)
+    _pre_cto_flag = False
+    if not is_evm_chain and isinstance(rug_data, dict):
+        _rc_tok = rug_data.get("token") or {}
+        _rc_dec = int(_rc_tok.get("decimals") if _rc_tok.get("decimals") is not None else 6)
+        _rc_sup = float(_rc_tok.get("supply") or 0.0)
+        _rc_ui = (_rc_sup / float(10 ** _rc_dec)) if _rc_sup > 0.0 else 0.0
+        _rc_burn = ((1_000_000_000.0 - _rc_ui) / 1_000_000_000.0 * 100.0) if (400_000_000.0 <= _rc_ui < 999_000_000.0 and _rc_dec == 6) else 0.0
+        _rc_cbal = float(rug_data.get("creatorBalance") or 0.0)
+        _rc_cpct = (_rc_cbal / _rc_sup * 100.0) if _rc_sup > 0.0 else 0.0
+        _rc_hold = int(rug_data.get("totalHolders") or 0)
+        _pre_cto_flag = bool(_rc_cpct <= 0.10 and ((mc >= 100_000.0 and _rc_hold >= 450) or (_rc_burn >= 5.0 and _rc_hold >= 280)))
+
+    # 0. Verifikasi Mikrostruktur 5m (Anti Wash-Peg & Bait-Slam) + Struktur ATH Historis ($Marvin 1 PM Guard + V3.8 CTO Reclaim)
     ath_ok, ath_reason, _ = evaluate_ohlcv_ath_trap(
         ohlcv_data,
         price_usd,
         mc,
         cand_age_mins,
-        is_hyper_wave1=bool(metrics.get("is_hyper_wave1"))
+        is_hyper_wave1=bool(metrics.get("is_hyper_wave1")),
+        is_verified_cto=_pre_cto_flag,
     )
     if not ath_ok:
         return {
@@ -2883,6 +3046,20 @@ def audit_and_dispatch_candidate(
             "reason": sub100k_reason,
         }
 
+    inev_meta = evaluate_sub100k_inevitable_100k_breakout(
+        best_pair=best_pair,
+        rug_data=rug_data,
+        holder_meta=holder_meta,
+        ohlcv_payload=ohlcv_data,
+        live_mc=live_mc,
+        liq_usd=liq,
+    )
+    if inev_meta.get("is_inevitable_100k"):
+        existing_p = list(sub100k_meta.get("deterrence_proofs") or [])
+        existing_p.insert(0, f"🔥 PASTI TEMBUS $100K ({inev_meta['signals_count']}/4 Sinyal Runner $400K+)")
+        sub100k_meta["deterrence_proofs"] = existing_p[:3]
+        sub100k_meta["is_sub100k_verified"] = True
+
     if metrics.get("is_early_whale"):
         early_proj_mc = live_mc * (1.0 + (metrics["est_delay_drift_pct"] / 100.0))
         ew_ok, ew_reason, ew_meta = verify_early_whale_stage2(
@@ -3039,9 +3216,9 @@ def audit_and_dispatch_candidate(
         tax_pct=_std_tax,
     )
     header_title = (
-        f"⚡ *[SELANGKAH DI DEPAN BOT — {chain_id.upper()} ANTI-SHAKEOUT V3.7]*"
+        f"⚡ *[SELANGKAH DI DEPAN BOT — {chain_id.upper()} ANTI-SHAKEOUT V3.9]*"
         if dna_meta.get("is_pre_bot_frontrun")
-        else f"🎯 *[CORRIDOR SNIPER V3.7: 34-MODUS ANTI-COUNTER-TRADE ({chain_id.upper()})]*"
+        else f"🎯 *[CORRIDOR SNIPER V3.9: 36-MODUS ANTI-COUNTER-TRADE ({chain_id.upper()})]*"
     )
     pre_bot_line = f"⚡ *Posisi Front-Run:* `{pre_bot_txt}`\n" if pre_bot_txt else ""
     sub100k_txt = _esc_md(" · ".join(sub100k_meta.get("deterrence_proofs", [])))
@@ -3082,7 +3259,7 @@ def audit_and_dispatch_candidate(
             "token": f"{safe_name} (${safe_symbol})",
             "mint": mint,
             "verdict": "ALERT_SENT",
-            "alert_title": "CORRIDOR SNIPER V3.7",
+            "alert_title": "CORRIDOR SNIPER V3.9",
             "corridor": metrics["corridor_name"],
             "live_mc": round(live_mc, 0),
             "projected_entry_mc": round(projected_entry_mc, 0),
@@ -3099,7 +3276,7 @@ def audit_and_dispatch_candidate(
         "token": f"{safe_name} (${safe_symbol})",
         "mint": mint,
         "verdict": "ALERT_FAILED",
-        "alert_title": "CORRIDOR SNIPER V3.7",
+        "alert_title": "CORRIDOR SNIPER V3.9",
         "corridor": metrics["corridor_name"],
         "max_safe_entry_mc": max_safe_entry_mc,
         "target_tp_mc": tp_mc,
@@ -3285,7 +3462,7 @@ def run_live_market_scan(engine, config) -> dict:
     t0 = time.time()
     print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V3.2 Dual-Track Scan (Masuk di Awal <$70k + 24-Modus Shield)...", flush=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as feed_exec:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=14) as feed_exec:
         f_gt_5m_p1 = feed_exec.submit(
             fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1", 2.5
         )
@@ -3295,6 +3472,7 @@ def run_live_market_scan(engine, config) -> dict:
         f_gt_ps = feed_exec.submit(
             fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/dexes/pumpswap/pools?page=1", 2.5
         )
+        f_ray_org = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=raydium", 2.8)
         f_gt_new = feed_exec.submit(
             fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1", 2.5
         )
@@ -3310,6 +3488,9 @@ def run_live_market_scan(engine, config) -> dict:
         f_gt_1h = feed_exec.submit(
             fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1", 2.5
         )
+        f_gt_6h = feed_exec.submit(
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1", 2.5
+        )
         f_organic = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=pumpswap", 2.8)
         f_b_latest = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/latest/v1", 2.8)
         f_b_top = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/top/v1", 2.8)
@@ -3323,7 +3504,9 @@ def run_live_market_scan(engine, config) -> dict:
         gt_bsc_new = f_gt_bsc_new.result()
         gt_base_5m = f_gt_base_5m.result()
         gt_1h = f_gt_1h.result()
+        gt_6h = f_gt_6h.result()
         organic_search = f_organic.result()
+        ray_search = f_ray_org.result()
         boosts_latest = f_b_latest.result()
         boosts_top = f_b_top.result()
         profiles = f_prof.result()
@@ -3381,7 +3564,8 @@ def run_live_market_scan(engine, config) -> dict:
     ordered_candidates.extend(_collect_gt(gt_5m_p2, "solana"))
     ordered_candidates.extend(profile_items[:10])
 
-    if isinstance(organic_search, dict):
+    for _org_payload in (organic_search, ray_search):
+      if isinstance(_org_payload, dict):
         for op in (organic_search.get("pairs") or []):
             ch = str(op.get("chainId") or "").lower()
             if ch in ("solana", "bsc", "base"):
@@ -3392,6 +3576,7 @@ def run_live_market_scan(engine, config) -> dict:
                     ordered_candidates.append((ch, op_addr))
 
     ordered_candidates.extend(_collect_gt(gt_1h, "solana"))
+    ordered_candidates.extend(_collect_gt(gt_6h, "solana"))
     ordered_candidates.extend(latest_boost_items[14:])
     ordered_candidates.extend(top_boost_items)
     ordered_candidates.extend(profile_items[10:])
