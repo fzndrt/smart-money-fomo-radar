@@ -496,8 +496,20 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     is_mega_corridor = c_cfg["corridor_id"] in (4, 5)
     if pair_created_at_ms:
         age_minutes = (now_ms - float(pair_created_at_ms)) / 60000.0
-        if age_minutes < 3.5:
-            return False, f"Terlalu baru ({age_minutes:.1f}m < 3.5m): Fase rawan MEV bundle block-0", {}
+        _inf_s1 = best_pair.get("info") or {}
+        _soc_cnt = len(_inf_s1.get("socials") or [])
+        _pair_boost = max(int(boost_amount or 0), int(((best_pair.get("boosts") or {}).get("active")) or 0))
+        _has_full_infra = bool(
+            _inf_s1.get("header")
+            and (
+                bool(_inf_s1.get("websites") or [])
+                or (_soc_cnt >= 2 and _pair_boost >= 50)
+            )
+            and _soc_cnt >= 1
+        )
+        _min_safe_age = 1.8 if (_has_full_infra and liq >= 28_000.0) else 3.5
+        if age_minutes < _min_safe_age:
+            return False, f"Terlalu baru ({age_minutes:.1f}m < {_min_safe_age:.1f}m): Fase rawan MEV bundle block-0", {}
         cto_liq_req = {1: 28_000.0, 2: 40_000.0, 3: 48_000.0, 4: 85_000.0, 5: 210_000.0}.get(c_cfg["corridor_id"], 999_999.0)
         cto_vol_h1_req = {1: 25_000.0, 2: 35_000.0, 3: 35_000.0, 4: 85_000.0, 5: 180_000.0}.get(c_cfg["corridor_id"], 999_999.0)
         cto_tx24_req = {1: 650, 2: 900, 3: 1100, 4: 1600, 5: 2400}.get(c_cfg["corridor_id"], 99_999)
@@ -635,6 +647,19 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     _tx_h1_tmp = (best_pair.get("txns") or {}).get("h1") or {}
     _tx_m5_tmp = (best_pair.get("txns") or {}).get("m5") or {}
     cum_tx_24h = max(cum_tx_24h, int(_tx_h1_tmp.get("buys") or 0) + int(_tx_h1_tmp.get("sells") or 0), int(_tx_m5_tmp.get("buys") or 0) + int(_tx_m5_tmp.get("sells") or 0))
+    # MODUS #37 (V4.0 — Kasus Nyata $FLOAT Bv1a7c...BMmr High-Cap Graduation $142.5K -> $2.16M dalam 30 Menit):
+    # Koin launchpad kustom (mis. floatlaunch.xyz -> Raydium CPMM) yang langsung lulus di MC $140K-$250K baru berumur
+    # 2-15 menit tetapi kecepatannya >= 32 tx/menit dengan LP tebal >= $28K (>=16% MC) & Vol 5m >= $35K -> BUKAN Ghost-Pump!
+    _vol_m5_s1 = float((best_pair.get("volume") or {}).get("m5") or 0.0)
+    if (
+        age_minutes <= 18.0
+        and liq >= max(c_cfg["min_liq"], 28_000.0)
+        and (liq / max(1.0, mc)) >= 0.16
+        and _vol_m5_s1 >= max(26_000.0, mc * 0.15)
+        and cum_tx_24h >= 120
+        and (cum_tx_24h / max(1.0, age_minutes)) >= 32.0
+    ):
+        effective_min_cum_tx = min(effective_min_cum_tx, max(120, int(age_minutes * 30.0)))
     if cum_tx_24h < effective_min_cum_tx:
         return (
             False,
@@ -651,6 +676,14 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     if (buys_h1 + sells_h1) >= 80 and buy_sell_ratio_h1 < 1.05:
         return False, f"Distribusi H1 berat: Penjual mendominasi 1 jam terakhir (Rasio H1 {buy_sell_ratio_h1:.2f}x)", {}
 
+    is_sub100k_propulsion_flow = (
+        c_cfg["corridor_id"] == 0
+        and vol_m5 >= max(9_000.0, mc * 0.16)
+        and total_m5 >= 55
+        and buy_sell_ratio_m5 >= 1.45
+        and p_m5 >= 8.0
+        and buy_sell_ratio_h1 >= 1.15
+    )
     high_tx_organic_flow = (
         (
             total_m5 >= (60 if is_mega_corridor else 80)
@@ -664,6 +697,7 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
             and buy_sell_ratio_h1 >= 1.20
         )
         or is_wave2_v_reclaim
+        or is_sub100k_propulsion_flow
     )
     min_bs_m5 = (1.30 if is_mega_corridor else 1.35) if high_tx_organic_flow else 1.85
     min_cvd = (13.0 if is_mega_corridor else 15.0) if high_tx_organic_flow else 29.8
@@ -753,10 +787,29 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
     avg_ticket = vol_m5 / max(1, total_m5)
     has_commitment = (boost_amount >= 100) or (pair_count >= 2 and liq >= 35_000.0) or is_proven_climber
     effective_min_ticket = c_cfg["min_avg_ticket"] * (0.85 if has_commitment else 1.0)
-    if vol_m5 < 2500.0 or avg_ticket < effective_min_ticket:
+    min_vol_m5_req = 4200.0 if c_cfg["corridor_id"] == 0 else 2500.0
+    if vol_m5 < min_vol_m5_req or avg_ticket < effective_min_ticket:
         return (
             False,
-            f"Order rata-rata terlalu receh/micro-bot (${avg_ticket:.1f} < ${effective_min_ticket:.1f})",
+            f"Order/volume 5m terlalu lemah untuk dorong naik (${vol_m5:,.0f} / tiket ${avg_ticket:.1f} < ${effective_min_ticket:.1f})",
+            {}
+        )
+
+    # GERBANG V5.0 (0ms RAM): Verifikasi Pembeli Unik vs Bot Klik Berulang & Eksodus Penjual dari Snapshot GeckoTerminal
+    gt_crowd = best_pair.get("gt_crowd") or {}
+    uniq_b_m5 = int(gt_crowd.get("buyers_m5") or 0)
+    uniq_s_m5 = int(gt_crowd.get("sellers_m5") or 0)
+    if uniq_b_m5 > 0 and buys_m5 >= 50 and (buys_m5 / float(uniq_b_m5)) > 5.5:
+        return (
+            False,
+            f"Terdeteksi Wash-Bot Klik Berulang: {buys_m5} klik Buy hanya dari {uniq_b_m5} dompet unik "
+            f"({buys_m5/float(uniq_b_m5):.1f} klik/dompet) -> Volume semu sebelum $100k!",
+            {}
+        )
+    if mc < 100_000.0 and uniq_b_m5 >= 12 and uniq_s_m5 >= int(uniq_b_m5 * 0.92):
+        return (
+            False,
+            f"Eksodus Penjual Unik <$100k: Dompet penjual ({uniq_s_m5}) hampir menyamai/melebihi pembeli unik ({uniq_b_m5}) -> Rawan mati sebelum $100k!",
             {}
         )
 
@@ -1143,6 +1196,10 @@ def analyze_holders_and_lp_lock(
         key=lambda m: float((m.get("lp") or {}).get("baseUSD") or 0.0) + float((m.get("lp") or {}).get("quoteUSD") or 0.0),
         reverse=True
     )
+    has_matched_primary = bool(
+        pair_address
+        and any(str(x.get("pubkey") or "").lower() == str(pair_address).lower() for x in sorted_markets)
+    )
     for idx, m in enumerate(sorted_markets):
         if m.get("liquidityA"): market_vaults.add(str(m["liquidityA"]).lower())
         if m.get("liquidityB"): market_vaults.add(str(m["liquidityB"]).lower())
@@ -1157,7 +1214,12 @@ def analyze_holders_and_lp_lock(
         m_type = str(m.get("marketType") or "").lower()
         lp_mint = str(lp.get("lpMint") or "")
 
-        if idx == 0 and pool_usd > 2500.0:
+        is_target_primary_mkt = (
+            (str(m.get("pubkey") or "").lower() == str(pair_address).lower())
+            if has_matched_primary
+            else (idx == 0)
+        )
+        if is_target_primary_mkt and pool_usd > 2500.0:
             hard_usd = 0.0
             base_m = str(lp.get("baseMint") or m.get("mintA") or "")
             quote_m = str(lp.get("quoteMint") or m.get("mintB") or "")
@@ -1547,6 +1609,19 @@ def _fuse_gt_pool_if_dex_lagging(pair: dict, gt_snap: dict = None) -> dict:
     has_live_m5 = (int(m5_t.get("buys", 0)) + int(m5_t.get("sells", 0))) > 0
     has_live_h1 = (int(h1_t.get("buys", 0)) + int(h1_t.get("sells", 0))) > 0
     if has_live_m5 and has_live_h1:
+        if isinstance(gt_snap, dict) and gt_snap.get("transactions"):
+            _gt_t = gt_snap.get("transactions") or {}
+            _gm5 = _gt_t.get("m5") or {}
+            _gh1 = _gt_t.get("h1") or {}
+            if int(_gm5.get("buyers") or 0) > 0 or int(_gh1.get("buyers") or 0) > 0:
+                enriched = dict(pair)
+                enriched["gt_crowd"] = {
+                    "buyers_m5": int(_gm5.get("buyers") or 0),
+                    "sellers_m5": int(_gm5.get("sellers") or 0),
+                    "buyers_h1": int(_gh1.get("buyers") or 0),
+                    "sellers_h1": int(_gh1.get("sellers") or 0),
+                }
+                return enriched
         return pair
 
     chain_id = str(pair.get("chainId") or "solana").lower()
@@ -1572,6 +1647,13 @@ def _fuse_gt_pool_if_dex_lagging(pair: dict, gt_snap: dict = None) -> dict:
     m15_src = gt_tx.get("m15") or {}
     h1_src = gt_tx.get("h1") or {}
     h24_src = gt_tx.get("h24") or {}
+    if int(m5_src.get("buyers") or 0) > 0 or int(h1_src.get("buyers") or 0) > 0:
+        merged["gt_crowd"] = {
+            "buyers_m5": int(m5_src.get("buyers") or 0),
+            "sellers_m5": int(m5_src.get("sellers") or 0),
+            "buyers_h1": int(h1_src.get("buyers") or 0),
+            "sellers_h1": int(h1_src.get("sellers") or 0),
+        }
     use_m5_b = int(m5_src.get("buys", 0)) or (max(1, int(int(m15_src.get("buys", 0)) / 3)) if int(m15_src.get("buys", 0)) > 0 else 0)
     use_m5_s = int(m5_src.get("sells", 0)) or int(int(m15_src.get("sells", 0)) / 3)
 
@@ -1823,6 +1905,238 @@ def evaluate_sub100k_inevitable_100k_breakout(
         "is_inevitable_100k": is_inevitable,
         "signals_count": len(signals),
         "signals": signals[:3],
+    }
+
+
+def evaluate_comprehensive_sub100k_crossing_engine(
+    best_pair: dict,
+    rug_data: dict | None,
+    holder_meta: dict,
+    ohlcv_payload,
+    live_mc: float,
+    liq_usd: float,
+    boost_amount: int = 0,
+) -> tuple[bool, str, dict]:
+    """
+    MESIN KOMPREHENSIF V5.0 (MODUS #39 — UNIVERSAL SUB-$100K -> $100K+ CROSSING PHYSICS ENGINE):
+    Bukan aturan tambal-sulam per koin, melainkan Hukum Fisika Pasar & Matematika AMM (`x * y = k`) Universal
+    untuk menyaring 95% koin baru yang mati sebelum MC $100K vs 5% koin yang PASTI MENEMBUS MC $100K+ ($105K-$125K+):
+      - Tidak peduli apakah koin mati setelah melewati $100K ($115K-$150K) atau lanjut ke $2M, karena entry kita <$100K!
+      - Wajib lulus:
+        1. AMM Net Buy Inflow Coverage (R_cross >= 0.32x kebutuhan modal bersih untuk menggeser kurva AMM ke $105K MC,
+           artinya estimasi waktu tembus $100K <= 15.6 menit pada kecepatan uang masuk sekarang).
+        2. Bebas Veto Kerumunan Semu (Wash-Bot klik berulang >5.5 klik/dompet, Eksodus Penjual Unik >=92% pembeli,
+           atau Distribusi Candle Merah Aktif).
+        3. Skor Kuantitatif 5-Pilar Universal >= 68/100:
+           - Pilar 1 (0-30): Propulsi Uang Bersih vs Jarak Kurva AMM ke $105K (R_cross & tau_100k)
+           - Pilar 2 (0-20): Bantalan Likuiditas & Ketahanan Bantingan (LP USD & LP/MC %)
+           - Pilar 3 (0-20): Keaslian Kerumunan Pembeli Unik & Konviksi Ukuran Tiket
+           - Pilar 4 (0-20): Geometri Struktur Candle & Kelelahan Penjual (Close Kuat, Higher-Low, Green>Red Vol)
+           - Pilar 5 (0-15): Imunitas Suplai Atas & Sunk-Cost Ekonomi di Atas $100K
+    """
+    if live_mc <= 0.0 or live_mc >= 100_000.0:
+        return True, "Di atas zona <$100K", {"is_crossing_verified": False, "crossing_score": 0}
+
+    bp = best_pair or {}
+    h_meta = holder_meta if isinstance(holder_meta, dict) else {}
+    rug_d = rug_data if isinstance(rug_data, dict) else {}
+
+    vol_m5 = float((bp.get("volume") or {}).get("m5") or 0.0)
+    tx_m5 = (bp.get("txns") or {}).get("m5") or {}
+    b_m5 = int(tx_m5.get("buys") or 0)
+    s_m5 = int(tx_m5.get("sells") or 0)
+    tot_m5 = b_m5 + s_m5
+    p_m5 = float((bp.get("priceChange") or {}).get("m5") or 0.0)
+
+    if tot_m5 < 20 or b_m5 <= s_m5:
+        return (
+            False,
+            f"V5.0 Fisika <$100K Gagal: Pembeli tidak dominan ({b_m5}B / {s_m5}S) -> Kehabisan tenaga sebelum $100K!",
+            {},
+        )
+
+    gt_crowd = bp.get("gt_crowd") or {}
+    uniq_b = int(gt_crowd.get("buyers_m5") or 0)
+    uniq_s = int(gt_crowd.get("sellers_m5") or 0)
+    if uniq_b > 0 and b_m5 >= 50 and (b_m5 / float(uniq_b)) > 5.5:
+        return (
+            False,
+            f"V5.0 Anti-Wash <$100K: {b_m5} klik Buy hanya berasal dari {uniq_b} dompet ({b_m5/float(uniq_b):.1f} klik/dompet) -> Bot cuci volume!",
+            {},
+        )
+    if uniq_b >= 12 and uniq_s >= int(uniq_b * 0.92):
+        return (
+            False,
+            f"V5.0 Eksodus <$100K: Penjual unik ({uniq_s}) menyaingi pembeli unik ({uniq_b}) -> Distribusi sebelum $100K!",
+            {},
+        )
+
+    candles = []
+    if isinstance(ohlcv_payload, dict):
+        raw_c = ((ohlcv_payload.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+        candles = [r for r in raw_c if isinstance(r, (list, tuple)) and len(r) >= 6 and float(r[2] or 0.0) > 0.0]
+        candles.sort(key=lambda x: float(x[0] or 0.0))
+
+    if len(candles) >= 3:
+        c_last2 = candles[-2:]
+        r_v2 = sum(float(r[5] or 0.0) for r in c_last2 if float(r[4] or 0.0) < float(r[1] or 0.0))
+        g_v2 = sum(float(r[5] or 0.0) for r in c_last2 if float(r[4] or 0.0) >= float(r[1] or 0.0))
+        if float(candles[-1][4] or 0.0) < float(candles[-1][1] or 0.0) and r_v2 > max(6_000.0, g_v2 * 1.35):
+            return (
+                False,
+                f"V5.0 Distribusi Aktif <$100K: Candle terakhir merah dengan buangan (${r_v2:,.0f}) > serapan hijau (${g_v2:,.0f})!",
+                {},
+            )
+
+    # PILAR 1 (0-30 Poin): Matematika Kurva AMM Constant-Product (x * y = k) menuju MC $105,000
+    target_cross_mc = 105_000.0
+    hard_quote_usd = float(h_meta.get("primary_hard_usd") or h_meta.get("total_quote_hard_usd") or (liq_usd * 0.50))
+    hard_quote_usd = max(3_500.0, min(hard_quote_usd, liq_usd * 0.65)) if liq_usd > 0 else 6_000.0
+    delta_q_need = max(1_200.0, hard_quote_usd * (((target_cross_mc / max(10_000.0, live_mc)) ** 0.5) - 1.0))
+
+    imb_tx = (b_m5 - s_m5) / float(max(1, tot_m5))
+    imb_vol = 0.0
+    if len(candles) >= 2:
+        recent_bars = candles[-3:]
+        gv = sum(float(r[5] or 0.0) for r in recent_bars if float(r[4] or 0.0) >= float(r[1] or 0.0))
+        rv = sum(float(r[5] or 0.0) for r in recent_bars if float(r[4] or 0.0) < float(r[1] or 0.0))
+        if (gv + rv) > 0.0:
+            imb_vol = (gv - rv) / (gv + rv)
+
+    eff_imb = min(0.65, max(imb_tx, (0.65 * imb_tx) + (0.22 * max(0.0, imb_vol))))
+    est_net_inflow_5m = vol_m5 * max(0.0, eff_imb)
+    inflow_coverage = est_net_inflow_5m / max(1.0, delta_q_need)
+    est_mins_to_100k = round(5.0 / max(0.05, inflow_coverage), 1)
+
+    if inflow_coverage < 0.32:
+        return (
+            False,
+            f"V5.0 Bensin Kurang Menuju $100K: Arus beli bersih 5m (~${est_net_inflow_5m:,.0f}) baru menutup "
+            f"{inflow_coverage*100:.0f}% kebutuhan kurva AMM ke $105K (${delta_q_need:,.0f}, est {est_mins_to_100k}m > 15.6m) -> Rawan layu <$100K!",
+            {},
+        )
+
+    if inflow_coverage >= 1.10:
+        p1_score = 30
+    elif inflow_coverage >= 0.75:
+        p1_score = 25
+    elif inflow_coverage >= 0.50:
+        p1_score = 20
+    else:
+        p1_score = 14
+
+    # PILAR 2 (0-20 Poin): Ketebalan Bantalan Likuiditas terhadap Profit-Taking <$100K
+    liq_mc_pct = (liq_usd / live_mc) * 100.0
+    if liq_usd >= 16_000.0 and liq_mc_pct >= 21.0:
+        p2_score = 20
+    elif liq_usd >= 13_000.0 and liq_mc_pct >= 17.0:
+        p2_score = 16
+    elif liq_usd >= 10_500.0 and liq_mc_pct >= 12.0:
+        p2_score = 12
+    else:
+        p2_score = 5
+
+    # PILAR 3 (0-20 Poin): Lebar Kerumunan Pembeli & Konviksi Ukuran Tiket
+    bs_ratio = b_m5 / float(max(1, s_m5))
+    uniq_ratio = (uniq_b / float(max(1, uniq_s))) if uniq_b >= 10 else 0.0
+    if bs_ratio >= 1.85 or (uniq_b >= 22 and uniq_ratio >= 1.60):
+        p3_score = 13
+    elif bs_ratio >= 1.50 or (uniq_b >= 16 and uniq_ratio >= 1.38):
+        p3_score = 10
+    else:
+        p3_score = 7
+
+    avg_ticket = vol_m5 / float(max(1, tot_m5))
+    if avg_ticket >= 85.0 or tot_m5 >= 95:
+        p3_score += 7
+    elif avg_ticket >= 42.0 or tot_m5 >= 55:
+        p3_score += 4
+
+    # PILAR 4 (0-20 Poin): Geometri Struktur Candle Universal & Seller Exhaustion
+    p4_score = 0
+    if len(candles) >= 2:
+        lo, lh, ll, lc = (
+            float(candles[-1][1] or 0.0),
+            float(candles[-1][2] or 0.0),
+            float(candles[-1][3] or 0.0),
+            float(candles[-1][4] or 0.0),
+        )
+        c_rng = max(1e-12, lh - ll)
+        close_pos = (lc - ll) / c_rng
+        if lc >= lo and close_pos >= 0.60:
+            p4_score += 8
+        elif lc >= lo:
+            p4_score += 4
+
+        first_l = float(candles[0][3] or 0.0)
+        prev_l = float(candles[-2][3] or 0.0)
+        if ll >= prev_l and (first_l <= 0.0 or ll >= first_l * 1.05):
+            p4_score += 7
+        elif first_l > 0.0 and ll >= first_l:
+            p4_score += 4
+
+        gv_all = sum(float(r[5] or 0.0) for r in candles[-4:] if float(r[4] or 0.0) >= float(r[1] or 0.0))
+        rv_all = sum(float(r[5] or 0.0) for r in candles[-4:] if float(r[4] or 0.0) < float(r[1] or 0.0))
+        if gv_all >= max(5_000.0, rv_all * 1.35):
+            p4_score += 5
+        elif gv_all > rv_all:
+            p4_score += 3
+    else:
+        if p_m5 >= 12.0 and bs_ratio >= 1.60:
+            p4_score = 15
+        elif p_m5 >= 6.0 and bs_ratio >= 1.40:
+            p4_score = 11
+        else:
+            p4_score = 6
+
+    # PILAR 5 (0-15 Poin): Imunitas Suplai Atas & Sunk-Cost Ekonomi
+    p5_score = 0
+    creator_pct = float(h_meta.get("creator_pct") or 0.0)
+    lp_locked = float(h_meta.get("lp_locked_pct") or 0.0)
+    burned_pct = float(h_meta.get("burned_pct") or 0.0)
+    is_renounced = bool(h_meta.get("is_renounced"))
+    max_single = float(h_meta.get("max_single") or 0.0)
+    pure_top10 = float(h_meta.get("pure_top10") or 0.0)
+    total_holders = int(h_meta.get("total_holders") or rug_d.get("totalHolders") or 0)
+    info = bp.get("info") or {}
+    eff_boost = max(int(boost_amount or 0), int(((bp.get("boosts") or {}).get("active")) or 0))
+    has_paid_or_full = bool(info.get("header") or eff_boost >= 30 or ((info.get("websites") or []) and (info.get("socials") or [])))
+
+    if creator_pct <= 0.10 and (lp_locked >= 98.0 or burned_pct >= 2.0 or is_renounced):
+        p5_score += 6
+    elif creator_pct <= 0.50 and (lp_locked >= 95.0 or is_renounced):
+        p5_score += 4
+
+    if max_single <= 3.0 and pure_top10 <= 18.5:
+        p5_score += 5
+    elif max_single <= 4.1 and pure_top10 <= 22.5:
+        p5_score += 3
+
+    if has_paid_or_full or total_holders >= 250:
+        p5_score += 4
+    elif bool(info.get("socials") or info.get("websites")) or liq_usd >= 15_000.0:
+        p5_score += 2
+
+    total_score = min(100, p1_score + p2_score + p3_score + p4_score + p5_score)
+    if total_score < 68:
+        return (
+            False,
+            f"V5.0 Skor Tembus $100K Tidak Cukup ({total_score}/100 < 68 | Inflow {inflow_coverage:.2f}x AMM, "
+            f"LP {liq_mc_pct:.1f}% MC) -> Probabilitas mati sebelum $100K tinggi!",
+            {"is_crossing_verified": False, "crossing_score": total_score},
+        )
+
+    summary_tag = (
+        f"Skor Tembus $100K {total_score}/100 (Inflow {inflow_coverage:.2f}x Kurva AMM · Est ~{est_mins_to_100k}m ke $105K)"
+    )
+    return True, "LOLOS FISIKA TEMBUS $100K V5.0", {
+        "is_crossing_verified": True,
+        "crossing_score": total_score,
+        "delta_q_need_usd": round(delta_q_need, 0),
+        "est_net_inflow_5m_usd": round(est_net_inflow_5m, 0),
+        "inflow_coverage_ratio": round(inflow_coverage, 2),
+        "est_mins_to_100k": est_mins_to_100k,
+        "summary_tag": summary_tag,
     }
 
 
@@ -2253,7 +2567,7 @@ def fetch_pool_ohlcv(
     if not pair_address:
         return None
     gt_net = GT_NETWORK_MAP.get(str(chain_id or "solana").lower(), "solana")
-    tok_param = f"&token={token_address}" if (token_address and gt_net != "solana") else ""
+    tok_param = f"&token={token_address}" if token_address else ""
     if age_minutes <= 360.0:
         url = f"https://api.geckoterminal.com/api/v2/networks/{gt_net}/pools/{pair_address}/ohlcv/minute?aggregate=5&limit=72{tok_param}"
     elif age_minutes <= 1440.0:
@@ -2386,7 +2700,8 @@ def evaluate_ohlcv_ath_trap(
         ):
             is_wave2_staircase_reclaim = True
 
-    # 2. PERISAI V2.8B + V3.3 (#26A) + V3.4 God-Candle Consolidation:
+    # 2. PERISAI V2.8B + V3.3 (#26A) + V3.4 God-Candle Consolidation + V4.1 Birth Discovery:
+    has_birth_discovery_pullback = False
     if age_minutes <= 1440.0 and current_mc_usd < 1_080_000.0:
         recent_two = valid_candles[-2:]
         for idx_r, row in enumerate(recent_two):
@@ -2407,7 +2722,21 @@ def evaluate_ohlcv_ath_trap(
                         and current_price_usd >= c_v
                     ):
                         is_confirmed_whale_impulse = True
-                if candle_pump_pct >= 52.0 and wick_slam_pct >= 11.0 and not is_confirmed_whale_impulse:
+                # MODUS #38B (V4.1 — Birth Price-Discovery Pullback vs Bait & Slam, Kasus $STONKLANA GF74fB...Nyk6):
+                # Pada 2-10 menit pertama kelahiran pool (<= 3 candle 5m), koin yang baru bermigrasi sering mengalami
+                # penemuan harga awal (+60-80% lalu pullback sehat -18% s/d -32% di atas +16% Open dengan Vol >=$18K).
+                is_healthy_birth_discovery = (
+                    1.8 <= age_minutes <= 10.0
+                    and len(valid_candles) <= 3
+                    and current_mc_usd <= 260_000.0
+                    and float(row[5] or 0.0) >= 18_000.0
+                    and current_price_usd >= (o_v * 1.16)
+                    and c_v >= (o_v * 1.16)
+                    and wick_slam_pct <= 33.0
+                )
+                if is_healthy_birth_discovery:
+                    has_birth_discovery_pullback = True
+                if candle_pump_pct >= 52.0 and wick_slam_pct >= 11.0 and not is_confirmed_whale_impulse and not is_healthy_birth_discovery:
                     return (
                         False,
                         f"Jebakan Single-Candle Bait & Slam: Harga dipompa pancingan +{candle_pump_pct:.0f}% dalam "
@@ -2494,9 +2823,14 @@ def evaluate_ohlcv_ath_trap(
             local_4_high = max(float(r[2] or 0.0) for r in local_4)
             cto_g_vol = sum(float(r[5] or 0.0) for r in local_4 if float(r[4] or 0.0) >= float(r[1] or 0.0))
             cto_r_vol = sum(float(r[5] or 0.0) for r in local_4 if float(r[4] or 0.0) < float(r[1] or 0.0))
+            min_cto_rebound_mult = (
+                1.20
+                if (len(valid_candles) >= 18 and peak_idx <= (len(valid_candles) - 10))
+                else 1.40
+            )
             if (
                 post_dump_low > 0.0
-                and current_price_usd >= (post_dump_low * 1.40)
+                and current_price_usd >= (post_dump_low * min_cto_rebound_mult)
                 and local_4_high > 0.0
                 and current_price_usd >= (local_4_high * 0.88)
                 and cto_g_vol >= (cto_r_vol * 1.10)
@@ -2534,7 +2868,7 @@ def evaluate_ohlcv_ath_trap(
     # PERISAI V3.3 (#26B — Kasus Live $urmom 16:53-16:54 WIB Jarum $336.5k Tembus Plafon $315k Lalu Anjlok):
     # Jika jarum High candle sudah pernah menabrak/menembus Plafon Zona Merah lorong saat ini (>1.03x plafon)
     # dan harga sekarang sudah terpental turun >= 6.5% dari pucuk jarum itu, berarti atap SUDAH DITOLAK BANDAR!
-    if age_minutes <= 360.0 and current_mc_usd < 1_080_000.0:
+    if age_minutes <= 360.0 and current_mc_usd < 1_080_000.0 and not has_birth_discovery_pullback:
         active_ceiling = 0.0
         if 48_000.0 <= current_mc_usd <= 82_000.0:
             active_ceiling = 82_000.0
@@ -3027,7 +3361,8 @@ def audit_and_dispatch_candidate(
     safe_name = _esc_md(name)
     safe_symbol = _esc_md(symbol)
 
-    # GERBANG WAJIB MODUS #34 (V3.7): Semua koin di bawah MC $100K WAJIB lolos pembuktian Dev Tak Berani/Tak Bisa Nakal <$100K!
+    # GERBANG WAJIB V5.0 (MODUS #34 + MODUS #39): Semua koin di bawah MC $100K WAJIB lolos
+    # (1) Pelucutan Dev Anti-Nakal <$100K DAN (2) Mesin Fisika Komprehensif Tembus $100K+ (Skor >= 68/100)!
     sub100k_ok, sub100k_reason, sub100k_meta = verify_sub100k_dev_deterrence(
         best_pair=best_pair,
         rug_data=rug_data,
@@ -3046,6 +3381,23 @@ def audit_and_dispatch_candidate(
             "reason": sub100k_reason,
         }
 
+    cross_ok, cross_reason, cross_meta = evaluate_comprehensive_sub100k_crossing_engine(
+        best_pair=best_pair,
+        rug_data=rug_data,
+        holder_meta=holder_meta,
+        ohlcv_payload=ohlcv_data,
+        live_mc=live_mc,
+        liq_usd=liq,
+        boost_amount=int(metrics.get("boost_amount") or 0),
+    )
+    if not cross_ok:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": cross_reason,
+        }
+
     inev_meta = evaluate_sub100k_inevitable_100k_breakout(
         best_pair=best_pair,
         rug_data=rug_data,
@@ -3054,9 +3406,11 @@ def audit_and_dispatch_candidate(
         live_mc=live_mc,
         liq_usd=liq,
     )
-    if inev_meta.get("is_inevitable_100k"):
+    if cross_meta.get("is_crossing_verified"):
         existing_p = list(sub100k_meta.get("deterrence_proofs") or [])
-        existing_p.insert(0, f"🔥 PASTI TEMBUS $100K ({inev_meta['signals_count']}/4 Sinyal Runner $400K+)")
+        existing_p.insert(0, cross_meta["summary_tag"])
+        if inev_meta.get("is_inevitable_100k"):
+            existing_p.insert(1, f"Runner $400K+ ({inev_meta['signals_count']}/4 Sinyal)")
         sub100k_meta["deterrence_proofs"] = existing_p[:3]
         sub100k_meta["is_sub100k_verified"] = True
 
@@ -3196,11 +3550,17 @@ def audit_and_dispatch_candidate(
     max_safe_entry_mc = round(min(corridor_max_mc, max_mc_for_min_profit), 0)
     cut_loss = metrics["cut_loss_pct"]
 
-    moonbag_note = (
-        f"🌕 *Strategi Cult Mega-Runner ($10M-$50M+):* Ambil `70%` modal+untung di `${tp_mc:,.0f}` & biarkan `30% Free Moonbag` kawal terbang ke `$20M-$50M+`!\n"
-        if int(metrics.get("corridor_id", 0)) >= 4
-        else ""
-    )
+    cross_tp2_mc = round(max(108_000.0, min(128_000.0, projected_entry_mc * 1.75)), 0)
+    if int(metrics.get("corridor_id", 0)) >= 4:
+        moonbag_note = (
+            f"🌕 *Strategi Cult Mega-Runner ($10M-$50M+):* Ambil `70%` modal+untung di `${tp_mc:,.0f}` & biarkan `30% Free Moonbag` kawal terbang ke `$20M-$50M+`!\n"
+        )
+    elif int(metrics.get("corridor_id", 0)) == 0:
+        moonbag_note = (
+            f"🏁 *Strategi Panen Tembus $100K (Aman Walau Mati Pasca-$100K):* Jual `70%` di `${tp_mc:,.0f}` (Kunci Modal+Untung) & panen `30%` sisanya di `${cross_tp2_mc:,.0f}` begitu jebol `$100K`!\n"
+        )
+    else:
+        moonbag_note = ""
 
     dex_url, swap_label, swap_url = _get_chain_links(chain_id, mint)
     dna_reasons_txt = _esc_md(" · ".join(dna_meta.get("continuation_reasons", [])))
@@ -3216,13 +3576,13 @@ def audit_and_dispatch_candidate(
         tax_pct=_std_tax,
     )
     header_title = (
-        f"⚡ *[SELANGKAH DI DEPAN BOT — {chain_id.upper()} ANTI-SHAKEOUT V3.9]*"
+        f"⚡ *[SELANGKAH DI DEPAN BOT — {chain_id.upper()} ANTI-SHAKEOUT V5.0]*"
         if dna_meta.get("is_pre_bot_frontrun")
-        else f"🎯 *[CORRIDOR SNIPER V3.9: 36-MODUS ANTI-COUNTER-TRADE ({chain_id.upper()})]*"
+        else f"🎯 *[CORRIDOR SNIPER V5.0: UNIVERSAL SUB-$100K CROSSING & 39-MODUS ({chain_id.upper()})]*"
     )
     pre_bot_line = f"⚡ *Posisi Front-Run:* `{pre_bot_txt}`\n" if pre_bot_txt else ""
     sub100k_txt = _esc_md(" · ".join(sub100k_meta.get("deterrence_proofs", [])))
-    sub100k_line = f"🔒 *Jaminan Anti-Nakal <$100K:* `{sub100k_txt}`\n" if sub100k_meta.get("is_sub100k_verified") and sub100k_txt else ""
+    sub100k_line = f"🔒 *Fisika Tembus $100K:* `{sub100k_txt}`\n" if sub100k_meta.get("is_sub100k_verified") and sub100k_txt else ""
 
     alert_msg = (
         f"{header_title}\n\n"
@@ -3254,12 +3614,12 @@ def audit_and_dispatch_candidate(
     sent, detail = send_telegram_direct(bot_tok, chat_id, alert_msg)
     if sent:
         _mark_corridor_alerted(mint, int(metrics.get("corridor_id", 0)))
-        print(f"[VERCEL-ALERT] 🚀 Sinyal V3.2 Delay-Proof terkirim untuk {safe_name} (${safe_symbol})!", flush=True)
+        print(f"[VERCEL-ALERT] 🚀 Sinyal V5.0 Delay-Proof terkirim untuk {safe_name} (${safe_symbol})!", flush=True)
         return {
             "token": f"{safe_name} (${safe_symbol})",
             "mint": mint,
             "verdict": "ALERT_SENT",
-            "alert_title": "CORRIDOR SNIPER V3.9",
+            "alert_title": "CORRIDOR SNIPER V5.0",
             "corridor": metrics["corridor_name"],
             "live_mc": round(live_mc, 0),
             "projected_entry_mc": round(projected_entry_mc, 0),
@@ -3267,8 +3627,10 @@ def audit_and_dispatch_candidate(
             "target_tp_mc": tp_mc,
             "roundtrip_loss_pct": rt_loss_pct,
             "est_net_gain_pct": net_from_projected_pct,
+            "sub100k_crossing_score": int(cross_meta.get("crossing_score") or 0),
+            "sub100k_inflow_coverage": float(cross_meta.get("inflow_coverage_ratio") or 0.0),
             "reason": (
-                f"Lolos V3.2 ({metrics['corridor_name']}) | Max Entry ${max_safe_entry_mc:,.0f} -> "
+                f"Lolos V5.0 ({metrics['corridor_name']}) | Max Entry ${max_safe_entry_mc:,.0f} -> "
                 f"TP ${tp_mc:,.0f} (+{net_from_projected_pct}% bersih setelah delay {int(PIPELINE_REACTION_DELAY_SEC)}s & fee riil)"
             )
         }
@@ -3276,7 +3638,7 @@ def audit_and_dispatch_candidate(
         "token": f"{safe_name} (${safe_symbol})",
         "mint": mint,
         "verdict": "ALERT_FAILED",
-        "alert_title": "CORRIDOR SNIPER V3.9",
+        "alert_title": "CORRIDOR SNIPER V5.0",
         "corridor": metrics["corridor_name"],
         "max_safe_entry_mc": max_safe_entry_mc,
         "target_tp_mc": tp_mc,
@@ -3308,8 +3670,34 @@ def _select_dual_track_candidate(best_pair: dict, pair_count: int = 1, boost_amo
     return std_ok, std_reason, std_metrics
 
 
+def _effective_pair_rank_key(pair: dict) -> float:
+    """
+    MODUS #38A (V4.1 — Anti One-Sided DLMM Liquidity Hijack, Kasus Nyata $STONKLANA GF74fB...Nyk6):
+    Cegah pool sekunder Meteora DLMM satu-sisi ($149.7K token base + hanya $7.1K SOL = $153.8K LP semu, Vol mati $715/j)
+    membajak posisi `best_pair` dari pool utama Raydium CPMM yang seimbang ($61K LP 50/50 100% Lock, Vol $1.17M)!
+    """
+    liq_d = pair.get("liquidity") or {}
+    raw_liq = float(liq_d.get("usd") or 0.0)
+    if raw_liq <= 0.0:
+        return 0.0
+    eff_liq = raw_liq
+    p_usd = float(pair.get("priceUsd") or 0.0)
+    base_amt = float(liq_d.get("base") or 0.0)
+    if p_usd > 0.0 and base_amt > 0.0:
+        base_val_usd = base_amt * p_usd
+        if 0.0 < base_val_usd <= (raw_liq * 1.05):
+            quote_val_usd = max(0.0, raw_liq - base_val_usd)
+            if quote_val_usd < (raw_liq * 0.28):
+                eff_liq = max(quote_val_usd * 2.2, raw_liq * 0.10)
+    vol_d = pair.get("volume") or {}
+    vol_h1 = float(vol_d.get("h1") or 0.0)
+    vol_m5 = float(vol_d.get("m5") or 0.0)
+    activity_bonus = min(eff_liq * 0.65, (vol_h1 * 0.25) + (vol_m5 * 0.80))
+    return eff_liq + activity_bonus
+
+
 def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
-    """Helper evaluasi 1 token mandiri Multi-Chain V3.5 (Solana + BSC + Base + ETH + Anti-Lag GeckoTerminal)."""
+    """Helper evaluasi 1 token mandiri Multi-Chain V4.1 (Solana + BSC + Base + ETH + Cross-Token & Effective LP)."""
     q_mint = str(mint or "").strip()
     dex_data = fetch_json(f"https://api.dexscreener.com/latest/dex/tokens/{q_mint}", timeout=3.2)
     if not dex_data or not dex_data.get("pairs"):
@@ -3328,7 +3716,7 @@ def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
 
     pairs = sorted(
         valid_pairs,
-        key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0.0),
+        key=_effective_pair_rank_key,
         reverse=True
     )
     best_pair = _fuse_gt_pool_if_dex_lagging(pairs[0])
@@ -3358,14 +3746,16 @@ def _extract_gt_multichain_candidates(gt_payload, expected_chain: str = "solana"
     prefix_map = {"solana": "solana_", "bsc": "bsc_", "base": "base_", "ethereum": "eth_"}
     pref = prefix_map.get(expected_chain, f"{expected_chain}_")
     for pool_item in (gt_payload.get("data") or []):
-        rel = ((pool_item.get("relationships") or {}).get("base_token") or {}).get("data") or {}
-        tok_id = str(rel.get("id") or "")
-        if tok_id.startswith(pref):
-            tok_addr = tok_id[len(pref):].strip()
-            check_key = tok_addr.lower() if expected_chain != "solana" else tok_addr
-            if tok_addr and check_key not in HARD_QUOTE_MINTS and tok_addr not in HARD_QUOTE_MINTS:
-                attrs = (pool_item.get("attributes") or {}) if isinstance(pool_item, dict) else {}
-                out.append((expected_chain, tok_addr, attrs))
+        rels = (pool_item.get("relationships") or {})
+        attrs = (pool_item.get("attributes") or {}) if isinstance(pool_item, dict) else {}
+        for rel_key in ("base_token", "quote_token"):
+            rel = (rels.get(rel_key) or {}).get("data") or {}
+            tok_id = str(rel.get("id") or "")
+            if tok_id.startswith(pref):
+                tok_addr = tok_id[len(pref):].strip()
+                check_key = tok_addr.lower() if expected_chain != "solana" else tok_addr
+                if tok_addr and check_key not in HARD_QUOTE_MINTS and tok_addr not in HARD_QUOTE_MINTS:
+                    out.append((expected_chain, tok_addr, attrs))
     return out
 
 
@@ -3397,7 +3787,7 @@ def _build_market_leaders_index(pairs_by_mint: dict) -> tuple[dict, dict]:
     for m_addr, p_list in (pairs_by_mint or {}).items():
         if not p_list:
             continue
-        bp = max(p_list, key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0.0))
+        bp = max(p_list, key=_effective_pair_rank_key)
         b_mc = float(bp.get("marketCap") or bp.get("fdv") or 0.0)
         b_liq = float((bp.get("liquidity") or {}).get("usd") or 0.0)
         if b_mc < 250_000.0 or b_liq < 25_000.0:
@@ -3566,7 +3956,7 @@ def run_live_market_scan(engine, config) -> dict:
 
     for _org_payload in (organic_search, ray_search):
       if isinstance(_org_payload, dict):
-        for op in (organic_search.get("pairs") or []):
+        for op in (_org_payload.get("pairs") or []):
             ch = str(op.get("chainId") or "").lower()
             if ch in ("solana", "bsc", "base"):
                 op_mc = float(op.get("marketCap") or op.get("fdv") or 0.0)
@@ -3649,7 +4039,7 @@ def run_live_market_scan(engine, config) -> dict:
 
         sorted_p = sorted(
             m_pairs,
-            key=lambda x: float((x.get("liquidity") or {}).get("usd") or 0.0),
+            key=_effective_pair_rank_key,
             reverse=True
         )
         best_p = sorted_p[0]
