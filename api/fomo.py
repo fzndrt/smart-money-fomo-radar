@@ -228,6 +228,19 @@ def simulate_jupiter_roundtrip(mint: str, timeout: float = 2.6) -> dict:
     if out_tokens_raw <= 0:
         return {"ok": False, "reason": "Simulasi beli menghasilkan 0 token (Kolam kering)"}
 
+    q_buy_routes = q_buy.get("routePlan") or []
+    q_buy_impact = abs(float(q_buy.get("priceImpactPct") or 0.0)) * 100.0 if abs(float(q_buy.get("priceImpactPct") or 0.0)) <= 1.0 else abs(float(q_buy.get("priceImpactPct") or 0.0))
+    if isinstance(q_buy_routes, list) and len(q_buy_routes) > 3:
+        return {
+            "ok": False,
+            "reason": f"MODUS #46 (MEV Split-Route Spoofing): Rute beli 0.1 SOL dipecah {len(q_buy_routes)} hop (>3) -> Kolam perantara semu!"
+        }
+    if q_buy_impact > 4.5:
+        return {
+            "ok": False,
+            "reason": f"MODUS #46 (Price Impact Beli Ekstrem): Tiket 0.1 SOL menggeser harga {q_buy_impact:.2f}% (>4.5%) -> Rawan sandwich MEV!"
+        }
+
     depth_tokens_raw = out_tokens_raw * TEST_DEPTH_MULTIPLIER
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as jup_exec:
         f_sell_01 = jup_exec.submit(_fetch_jup_single_quote, mint, SOL_MINT, out_tokens_raw, timeout)
@@ -237,6 +250,13 @@ def simulate_jupiter_roundtrip(mint: str, timeout: float = 2.6) -> dict:
 
     if not q_sell:
         return {"ok": False, "reason": "JEBAKAN HONEYPOT: Bisa dibeli tapi TIDAK BISA DIJUAL kembali ke SOL!"}
+
+    q_sell_routes = q_sell.get("routePlan") or []
+    if isinstance(q_sell_routes, list) and len(q_sell_routes) > 3:
+        return {
+            "ok": False,
+            "reason": f"MODUS #46 (MEV Exit-Route Trap): Rute jual 0.1 SOL harus memutar {len(q_sell_routes)} hop (>3) -> Likuiditas keluar semu!"
+        }
 
     sol_back_lamports = int(q_sell.get("outAmount") or 0)
     if sol_back_lamports <= 0:
@@ -1064,6 +1084,22 @@ def evaluate_early_whale_candidate(best_pair: dict, pair_count: int = 1, boost_a
             {}
         )
 
+    ew_gt_crowd = best_pair.get("gt_crowd") or {}
+    ew_uniq_b = int(ew_gt_crowd.get("buyers_m5") or 0)
+    ew_uniq_s = int(ew_gt_crowd.get("sellers_m5") or 0)
+    if ew_uniq_b > 0 and buys_m5 >= 40 and (buys_m5 / float(ew_uniq_b)) > 5.5:
+        return (
+            False,
+            f"MODUS #43 (Wash-Bot Klik Berulang Awal): {buys_m5} klik Buy hanya dari {ew_uniq_b} dompet unik!",
+            {}
+        )
+    if ew_uniq_b >= 12 and ew_uniq_s >= int(ew_uniq_b * 0.92):
+        return (
+            False,
+            f"MODUS #43 (Eksodus Penjual Unik Awal): Penjual unik ({ew_uniq_s}) menyaingi pembeli unik ({ew_uniq_b})!",
+            {}
+        )
+
     turnover_h1 = vol_h1 / max(1.0, mc)
     if vol_h1 < max(18_000.0, mc * 0.45):
         return False, f"Volume serapan awal belum cukup kuat (${vol_h1:,.0f})", {}
@@ -1269,23 +1305,34 @@ def analyze_holders_and_lp_lock(
                         {}
                     )
 
+        is_clmm_or_damm = any(k in m_type for k in ("meteora", "dlmm", "damm", "orca", "whirlpool", "clmm"))
+        is_burned_spl_lp = (lp_mint == "11111111111111111111111111111111") and not is_clmm_or_damm
+
         if locked_pct is not None and pool_usd > 1000.0:
             pct_val = float(locked_pct)
             if 0.0 < pct_val <= 1.0 and float(lp.get("lpLockedUSD") or 0.0) > pool_usd * 0.5:
                 pct_val *= 100.0
-            is_primary_mkt = (str(m.get("pubkey") or "").lower() == str(pair_address).lower()) if pair_address else (idx == 0)
-            if is_primary_mkt or idx == 0:
-                if is_primary_mkt or not pair_address:
-                    primary_lp_locked_pct = round(pct_val, 1)
-                if ("raydium" in m_type or "pump" in m_type) and lp_mint != "11111111111111111111111111111111":
-                    if pct_val < 85.0:
-                        return False, f"Bahaya Rug LP: Pool utama hanya terkunci {pct_val:.1f}% (< 85%)", {}
+            if is_target_primary_mkt:
+                primary_lp_locked_pct = 100.0 if (is_burned_spl_lp and pct_val >= 85.0) else round(pct_val, 1)
+                if not is_burned_spl_lp and pct_val < 85.0:
+                    return (
+                        False,
+                        f"MODUS #42A (Bahaya Rug LP Utama {m_type or 'DEX'}): Pool utama hanya terkunci {pct_val:.1f}% (< 85%) -> Rawan tarik likuiditas!",
+                        {}
+                    )
 
             locked_u = float(lp.get("lpLockedUSD") or (pool_usd * (pct_val / 100.0)))
-            if (str(m.get("pubkey") or "").lower() == str(pair_address).lower()) if pair_address else (idx == 0):
+            if is_target_primary_mkt:
                 primary_locked_usd = max(primary_locked_usd, locked_u)
             total_locked_usd += locked_u
             total_unlocked_usd += max(0.0, pool_usd - locked_u)
+        elif is_target_primary_mkt and pool_usd > 1000.0 and "pump" not in m_type and not is_burned_spl_lp:
+            primary_lp_locked_pct = 0.0
+            return (
+                False,
+                f"MODUS #42A (Status Kunci LP Kosong): Pool utama ({m_type or 'DEX'}) tidak memiliki bukti kunci LP (Fail-Closed)!",
+                {}
+            )
 
     has_fortress_primary_lock = (
         primary_lp_locked_pct >= 95.0
@@ -1298,7 +1345,9 @@ def analyze_holders_and_lp_lock(
             {}
         )
 
-    # 5. Pemisahan Pool AMM (termasuk Vault Owner PumpSwap/Meteora & knownAccounts Locker/AMM) vs Pure Holders
+    # 5. MODUS #41 (V5.2 Anti-Vanity Prefix Spoofing): Pemisahan Pool AMM HANYA via kecocokan alamat eksak!
+    # Menutup celah eksploitasi dev membuat dompet pribadi vanity berawalan '5q'/'67'/'ca' atau substring 'dead'/'burn'
+    # dalam <1.5 detik (`solana-keygen grind`) untuk menyembunyikan paus dev 25%-40% sebagai seolah-olah Pool AMM!
     norm_pair = (pair_address or "").lower()
     pool_holdings = []
     pure_holdings = []
@@ -1308,15 +1357,12 @@ def analyze_holders_and_lp_lock(
         owner = str(h.get("owner") or "").lower()
         pct = float(h.get("pct") or 0.0)
         is_pool = (
-            addr == norm_pair
-            or (owner and owner == norm_pair)
+            (norm_pair != "" and addr == norm_pair)
+            or (norm_pair != "" and owner == norm_pair)
             or addr in market_vaults
-            or (owner and owner in market_vaults)
+            or (owner != "" and owner in market_vaults)
             or addr in KNOWN_POOL_IDENTIFIERS
-            or (owner and owner in KNOWN_POOL_IDENTIFIERS)
-            or "burn" in addr
-            or "dead" in addr
-            or (pct >= 18.0 and (addr.startswith("5q") or addr.startswith("67") or addr.startswith("ca")))
+            or (owner != "" and owner in KNOWN_POOL_IDENTIFIERS)
         )
         if is_pool:
             pool_holdings.append({"address": addr, "pct": pct})
@@ -1338,17 +1384,29 @@ def analyze_holders_and_lp_lock(
     if 400_000_000.0 <= supply_ui < 999_000_000.0 and (str(token_mint or "").endswith("pump") or decimals == 6):
         spl_burned_pct = round(((1_000_000_000.0 - supply_ui) / 1_000_000_000.0) * 100.0, 2)
 
-    # Deteksi Pengambilalihan Komunitas Murni (Verified Post-Dev-Exit CTO):
-    # Dev 100% sudah keluar (<=0.10%), LP Lock >=98%, distribusi rata tanpa paus penampung (max <=3.5%, top10 <=20.5%),
-    # serta komunitas masif sudah terbentuk (>=450 holders di MC >=$100k, atau >=280 holders dengan SPL Burn >=5%!).
+    # Deteksi Pengambilalihan Komunitas Murni / Relayer Launchpad Bersih (Verified Post-Dev-Exit CTO):
+    # Dev 100% sudah keluar (<=0.10%), LP Lock >=98%, distribusi rata tanpa paus penampung (max <=3.5%),
+    # serta komunitas masif sudah terbentuk (>=450 holders di MC >=$100k, >=280 holders dgn SPL Burn >=5%,
+    # atau >=220 holders murni dgn 0 jejak transfer/graph insider seperti $INVERSE LaunchLab/Printr 18.5x!).
+    cto_top10_cap = (
+        min(25.0, round(outside_pool_pct * 0.29, 1))
+        if (outside_pool_pct >= 80.0 and total_holders >= 1000 and insider_count == 0)
+        else 20.5
+    )
+    has_zero_insider_footprint = (
+        insider_count == 0
+        and int(rug_data.get("graphInsidersDetected") or 0) == 0
+        and len(rug_data.get("insiderNetworks") or []) == 0
+    )
     is_verified_cto_takeover = bool(
         creator_pct <= 0.10
         and primary_lp_locked_pct >= 98.0
         and max_single_pure <= 3.5
-        and top10_pure_pct <= 20.5
+        and top10_pure_pct <= cto_top10_cap
         and (
             (mc_usd >= 100_000.0 and total_holders >= 450)
             or (spl_burned_pct >= 5.0 and total_holders >= 280)
+            or (has_zero_insider_footprint and total_holders >= 220)
         )
     )
 
@@ -1483,17 +1541,17 @@ def analyze_holders_and_lp_lock(
                 {}
             )
 
-    # Kalibrasi V2.5/V2.6 Pool-Depletion-Aware Pareto Ceiling ($Macca / $PONS / $STONK Guard):
+    # Kalibrasi V2.5/V2.6/V5.2 Pool-Depletion-Aware Pareto Ceiling ($Macca / $PONS / $STONK / $HI / $Nothing Guard):
     # Saat pool AMM menyusut ke <20% (outside_pool >= 80%) pada koin komunitas besar (>=1.000 holders,
-    # dev <=1%, 0 insider, tanpa paus >4.0%), Top 10 pure 23.5% setara hanya ~25.5% suplai beredar di luar pool.
+    # dev <=1%, 0 insider, tanpa paus >4.5%), Top 10 pure 20%-24.5% setara ~25% suplai beredar di luar pool.
     is_broad_community_depletion = (
         outside_pool_pct >= 80.0
         and total_holders >= 1000
         and creator_pct <= 1.0
         and insider_count == 0
-        and max_single_pure <= 4.0
+        and max_single_pure <= 4.5
     )
-    max_top10_pure = min(25.0, round(outside_pool_pct * 0.275, 1)) if is_broad_community_depletion else 19.5
+    max_top10_pure = min(25.0, round(outside_pool_pct * 0.29, 1)) if is_broad_community_depletion else 19.5
     if top10_pure_pct > max_top10_pure:
         return False, f"Top 10 Pure Holders terlalu pekat ({top10_pure_pct:.1f}% > {max_top10_pure:.1f}%)", {}
 
@@ -1551,6 +1609,25 @@ def analyze_holders_and_lp_lock(
                 f"({min(packed_mid):.2f}%-{max(packed_mid):.2f}%) pada koin muda!",
                 {}
             )
+
+    # MODUS #44 (V5.2 — Anti CEX-Funded Graded Jito Bundler + Dust-Holder Padding):
+    # Bundler modern menarik dana terpisah dari CEX (0 jejak transfer di insiderNetworks!) dan membuat tangga porsi miring
+    # (mis. 2.85%, 2.55%, 2.28%, 1.98%, 1.72%, 1.48%) ditambah 80 bot debu (<0.20%) agar lolos syarat holder minimum.
+    # Ciri matematis mutlaknya: setelah dompet cabal ke-k (k=5..10, masing-masing >=1.25%, total >=12%), porsi holder ke-(k+2)
+    # langsung terjun jurang >=5.5x menjadi debu (<0.25%) — melanggar hukum kurva kontinu Zipf ritel organik!
+    if 0 < total_holders < 380 and age_minutes < 90.0 and len(pure_holdings) >= 10 and not is_verified_cto_takeover:
+        for k_shelf in range(5, min(11, len(pure_holdings) - 1)):
+            cabal_slice = pure_holdings[:k_shelf]
+            shelf_floor = cabal_slice[-1]["pct"]
+            cabal_sum = sum(x["pct"] for x in cabal_slice)
+            dust_after = pure_holdings[k_shelf + 1]["pct"]
+            if shelf_floor >= 1.25 and cabal_sum >= 12.0 and dust_after < 0.25 and (shelf_floor / max(0.001, dust_after)) >= 5.5:
+                return (
+                    False,
+                    f"MODUS #44 (Bundel Cabal CEX + Padding Bot Debu): Top {k_shelf} dompet menguasai {cabal_sum:.1f}% "
+                    f"(>={shelf_floor:.2f}%/dompet) lalu terjun jurang ke debu {dust_after:.2f}% -> Sebaran Jito Bundle miring buatan!",
+                    {}
+                )
 
     # Deteksi Kluster Cabal Kloningan Menengah (1.20% - 4.50%):
     # Hanya blokir jika dev memecah saldo kloningan identik (>= 4 dompet selisih <= 0.015%, atau >= 3 paus >= 2.40% selisih <= 0.04%)
@@ -1660,9 +1737,10 @@ def _fuse_gt_pool_if_dex_lagging(pair: dict, gt_snap: dict = None) -> dict:
         gt_net = GT_NETWORK_MAP[chain_id]
         pool_res = fetch_json(f"https://api.geckoterminal.com/api/v2/networks/{gt_net}/pools/{pair_addr}", timeout=2.5)
         if isinstance(pool_res, dict):
-            attrs = (pool_res.get("data") or {}).get("attributes") or {}
+            _d_node = pool_res.get("data")
+            attrs = (_d_node.get("attributes") or {}) if isinstance(_d_node, dict) else {}
 
-    if not isinstance(attrs, dict):
+    if not isinstance(attrs, dict) or not attrs:
         return pair
 
     merged = dict(pair)
@@ -1749,6 +1827,9 @@ def analyze_evm_goplus_security(
         ("is_blacklisted", "Blacklist Switch"),
         ("slippage_modifiable", "Modifiable Tax/Slippage"),
         ("personal_slippage_modifiable", "Wallet Tax Trap"),
+        ("trading_cooldown", "Trading Cooldown Trap"),
+        ("gas_abuse", "Gas Drain Backdoor"),
+        ("anti_whale_modifiable", "Modifiable Max-Tx Trap"),
     ]
     for f_key, f_label in fatal_flags:
         if str(tok.get(f_key) or "0") == "1":
@@ -1769,6 +1850,10 @@ def analyze_evm_goplus_security(
 
     owner_addr = str(tok.get("owner_address") or "").strip().lower()
     is_renounced = (owner_addr == "" or owner_addr in EVM_BURN_ADDRESSES)
+    if str(tok.get("is_proxy") or "0") == "1" and not is_renounced:
+        return False, "MODUS #42B (Upgradeable Proxy EVM Aktif): Dev bisa mengubah kode pajak ke 99% setelah kita beli!", {}
+    if str(tok.get("external_call") or "0") == "1" and not is_renounced:
+        return False, "MODUS #42B (External Call Backdoor EVM): Kontrak memanggil alamat luar yang masih dikendalikan Owner!", {}
     owner_pct = float(tok.get("owner_percent") or 0.0) * 100.0
     if not is_renounced and owner_pct > 2.0:
         return False, f"Owner kontrak belum Renounced & memegang {owner_pct:.1f}% suplai", {}
@@ -1810,22 +1895,59 @@ def analyze_evm_goplus_security(
                 {}
             )
 
-    lp_locked_pct = 100.0 if is_renounced else 0.0
+    lp_info = tok.get("launchpad_token") or {}
+    launchpad_name = str(lp_info.get("launchpad_name") or "") if isinstance(lp_info, dict) else ""
+
+    # MODUS #42B (V5.2 Anti Fake-Renounced LP Pull di BSC/Base/ETH):
+    # Pada EVM (PancakeSwap/Uniswap V2), renounceOwnership() pada kontrak token TIDAK mengunci token Cake-LP/UNI-V2 di dompet dev!
+    # Namun pastikan lp_holders di GoPlus benar-benar merepresentasikan kolam utama (bukan posisi NFT debu $1-$50 seperti
+    # Pancake Infinity CL $1.14 pada Giggle Academy 0x53e3...7777 saat kolam utama BNCB $22K+ belum diindeks GoPlus).
+    creator_addr = str(tok.get("creator_address") or "").strip().lower()
+    norm_tok_addr = str(token_address or "").strip().lower()
+    is_known_evm_launchpad_suffix = norm_tok_addr.endswith(("7777", "4444"))
     lp_holders = tok.get("lp_holders") or []
-    if isinstance(lp_holders, list) and lp_holders:
+    gp_dex_liq_usd = sum(
+        float(dx.get("liquidity") or 0.0)
+        for dx in (tok.get("dex") or [])
+        if isinstance(dx, dict)
+    )
+    gp_lph_val_usd = sum(
+        float(lph.get("value") or 0.0)
+        for lph in lp_holders
+        if isinstance(lph, dict) and lph.get("value") is not None
+    )
+    gp_tracked_usd = max(gp_dex_liq_usd, gp_lph_val_usd)
+    is_dust_side_lp_only = (
+        gp_tracked_usd > 0.0
+        and liq_usd >= 5_000.0
+        and gp_tracked_usd < min(1_500.0, liq_usd * 0.10)
+    )
+    if isinstance(lp_holders, list) and lp_holders and not is_dust_side_lp_only:
         locked_lp_sum = 0.0
         for lph in lp_holders:
             lp_a = str(lph.get("address") or "").strip().lower()
             lp_p = float(lph.get("percent") or 0.0) * 100.0
-            if int(lph.get("is_locked") or 0) == 1 or lp_a in EVM_BURN_ADDRESSES:
+            is_locker_contract = (
+                int(lph.get("is_contract") or 0) == 1
+                and lp_a != ""
+                and lp_a != creator_addr
+                and lp_a != owner_addr
+            )
+            if int(lph.get("is_locked") or 0) == 1 or lp_a in EVM_BURN_ADDRESSES or is_locker_contract:
                 locked_lp_sum += lp_p
-        if locked_lp_sum > 0.0:
-            lp_locked_pct = round(min(100.0, locked_lp_sum), 1)
-        elif not is_renounced:
+        lp_locked_pct = round(min(100.0, locked_lp_sum), 1)
+        if lp_locked_pct < 80.0:
+            return (
+                False,
+                f"MODUS #42B (Jebakan Rug LP EVM meski Renounced): Token LP hanya terkunci/dibakar {lp_locked_pct:.1f}% (< 80%) "
+                "-> Dev masih memegang LP bebas & bisa menguras seluruh BNB/ETH kapan saja!",
+                {}
+            )
+    else:
+        if is_renounced:
+            lp_locked_pct = 100.0 if (launchpad_name or is_known_evm_launchpad_suffix) else 95.0
+        else:
             return False, "LP EVM belum terkunci/dibakar & kontrak belum Renounced -> Rawan tarik LP!", {}
-
-    lp_info = tok.get("launchpad_token") or {}
-    launchpad_name = str(lp_info.get("launchpad_name") or "") if isinstance(lp_info, dict) else ""
     holder_count = int(tok.get("holder_count") or 0)
     tax_roundtrip_pct = (buy_tax + sell_tax) * 100.0
     effective_rt_loss = round(min(5.2, tax_roundtrip_pct * 0.75 + 0.6) if (launchpad_name and is_renounced and buy_tax <= 0.032 and sell_tax <= 0.032) else (tax_roundtrip_pct + 0.6), 2)
@@ -2605,6 +2727,87 @@ def fetch_pool_ohlcv(
     return fetch_json(url, timeout=timeout)
 
 
+def fetch_pool_crowd_snapshot(pair_address: str, chain_id: str = "solana", timeout: float = 2.2) -> dict:
+    """
+    MODUS #43 (V5.2 — Penambal Celah Buta gt_crowd pada Koin Paid-Boost DexScreener):
+    Jika kandidat masuk lewat feed DexScreener Boost/Profile tanpa snapshot GeckoTerminal di Stage 1,
+    tarik data dompet unik (buyers & sellers m5/h1) secara PARALEL (0ms tambahan tunggu) di Stage 2
+    agar dev nakal tidak bisa membeli Boost $50 untuk menyembunyikan bot cuci volume 3 dompet!
+    """
+    if not pair_address:
+        return {}
+    gt_net = GT_NETWORK_MAP.get(str(chain_id or "solana").lower(), "")
+    if not gt_net:
+        return {}
+    res = fetch_json(f"https://api.geckoterminal.com/api/v2/networks/{gt_net}/pools/{pair_address}", timeout=timeout)
+    if not isinstance(res, dict):
+        return {}
+    d_node = res.get("data")
+    attrs = (d_node.get("attributes") or {}) if isinstance(d_node, dict) else {}
+    tx = attrs.get("transactions") or {}
+    m5_t = tx.get("m5") or {}
+    h1_t = tx.get("h1") or {}
+    if int(m5_t.get("buyers") or 0) <= 0 and int(h1_t.get("buyers") or 0) <= 0:
+        return {}
+    return {
+        "buyers_m5": int(m5_t.get("buyers") or 0),
+        "sellers_m5": int(m5_t.get("sellers") or 0),
+        "buyers_h1": int(h1_t.get("buyers") or 0),
+        "sellers_h1": int(h1_t.get("sellers") or 0),
+    }
+
+
+def evaluate_paid_boost_exit_trap(best_pair: dict, ohlcv_payload, boost_amount: int = 0) -> tuple[bool, str]:
+    """
+    MODUS #45 (V5.2 — PERISAI ANTI "PAID-BOOST EXIT LIQUIDITY TRAP"):
+    Membongkar taktik licik dev/bandar yang sengaja membeli DexScreener Boost ($99-$299) TEPAT DI PUCUK DISTRIBUSI
+    untuk memancing bot-bot pencari Boost masuk menjadi exit-liquidity (penampung barang buangan dev):
+      1. Jika Boost aktif (>=30), namun penjual unik 5m sudah >= 85% dari pembeli unik (>=15 buyers) -> VETO!
+      2. Jika Boost aktif (>=30) setelah pompa H1 >= +35%, namun candle terakhir sudah meninggalkan jarum banting atas
+         >= 40% rentang candle DAN volume buangan merah 2 bar terakhir >= 90% volume hijau -> VETO!
+    """
+    bp = best_pair or {}
+    eff_boost = max(int(boost_amount or 0), int(((bp.get("boosts") or {}).get("active")) or 0))
+    if eff_boost < 30:
+        return True, "Tanpa umpan Paid-Boost"
+
+    gt_crowd = bp.get("gt_crowd") or {}
+    uniq_b = int(gt_crowd.get("buyers_m5") or 0)
+    uniq_s = int(gt_crowd.get("sellers_m5") or 0)
+    if uniq_b >= 15 and uniq_s >= int(uniq_b * 0.85):
+        return (
+            False,
+            f"MODUS #45 (Jebakan Paid-Boost Exit Liquidity): Boost {eff_boost}x aktif tapi penjual unik ({uniq_s}) "
+            f"membanjiri pembeli unik ({uniq_b}) -> Dev beli iklan untuk buang barang ke bot pencari Boost!"
+        )
+
+    p_h1 = float(((bp.get("priceChange") or {}).get("h1")) or 0.0)
+    if p_h1 >= 35.0 and isinstance(ohlcv_payload, dict):
+        raw_c = ((ohlcv_payload.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+        candles = [r for r in raw_c if isinstance(r, (list, tuple)) and len(r) >= 6 and float(r[2] or 0.0) > 0.0]
+        candles.sort(key=lambda x: float(x[0] or 0.0))
+        if len(candles) >= 2:
+            c2 = candles[-2:]
+            r_vol = sum(float(r[5] or 0.0) for r in c2 if float(r[4] or 0.0) < float(r[1] or 0.0))
+            g_vol = sum(float(r[5] or 0.0) for r in c2 if float(r[4] or 0.0) >= float(r[1] or 0.0))
+            lo, lh, ll, lc = (
+                float(candles[-1][1] or 0.0),
+                float(candles[-1][2] or 0.0),
+                float(candles[-1][3] or 0.0),
+                float(candles[-1][4] or 0.0),
+            )
+            rng = max(1e-12, lh - ll)
+            up_wick_ratio = (lh - max(lo, lc)) / rng
+            if up_wick_ratio >= 0.40 and r_vol >= max(4_500.0, g_vol * 0.90):
+                return (
+                    False,
+                    f"MODUS #45 (Jebakan Paid-Boost di Pucuk Distribusi): Boost {eff_boost}x dipasang saat jarum banting atas "
+                    f"{up_wick_ratio*100:.0f}% & volume merah (${r_vol:,.0f}) menelan hijau (${g_vol:,.0f}) -> Umpan exit-liquidity!"
+                )
+
+    return True, "Paid-Boost organik bersih"
+
+
 
 def evaluate_ohlcv_ath_trap(
     ohlcv_payload,
@@ -3159,11 +3362,13 @@ def audit_and_dispatch_candidate(
     buys_m5 = int(txns_m5.get("buys", 0))
     sells_m5 = int(txns_m5.get("sells", 0))
 
-    # Tembak 3 audit secara PARALEL (0ms tambahan waktu tunggu!): RugCheck + Jupiter Round-Trip + OHLCV ATH
+    # Tembak audit Stage 2 secara PARALEL (0ms tambahan waktu tunggu!): RugCheck/GoPlus + Jupiter + OHLCV + GT Crowd!
     chain_id = str(best_pair.get("chainId") or "solana").lower()
     is_evm_chain = chain_id in GOPLUS_CHAIN_MAP
+    needs_gt_crowd = not bool((best_pair.get("gt_crowd") or {}).get("buyers_m5")) and bool(pair_address)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as sub_exec:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as sub_exec:
+        f_crowd = sub_exec.submit(fetch_pool_crowd_snapshot, pair_address, chain_id, 2.2) if needs_gt_crowd else None
         if is_evm_chain:
             gp_id = GOPLUS_CHAIN_MAP[chain_id]
             f_gp = sub_exec.submit(
@@ -3184,6 +3389,48 @@ def audit_and_dispatch_candidate(
             rt_res = f_rt.result()
             ohlcv_data = f_ohlcv.result()
             goplus_data = None
+        live_crowd = f_crowd.result() if f_crowd is not None else {}
+
+    if isinstance(live_crowd, dict) and live_crowd.get("buyers_m5", 0) > 0:
+        best_pair = dict(best_pair)
+        best_pair["gt_crowd"] = live_crowd
+
+    # MODUS #43 (V5.2 — Audit Kerumunan Unik Stage 2 Lintas-Lorong & Anti-Bypass Paid-Boost):
+    s2_crowd = best_pair.get("gt_crowd") or {}
+    s2_uniq_b5 = int(s2_crowd.get("buyers_m5") or 0)
+    s2_uniq_s5 = int(s2_crowd.get("sellers_m5") or 0)
+    s2_uniq_bh1 = int(s2_crowd.get("buyers_h1") or 0)
+    s2_buys_h1 = int(((best_pair.get("txns") or {}).get("h1") or {}).get("buys") or 0)
+    if s2_uniq_b5 > 0 and buys_m5 >= 40 and (buys_m5 / float(s2_uniq_b5)) > 5.5:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": (
+                f"MODUS #43 (Wash-Bot Klik Berulang Stage 2): {buys_m5} klik Buy 5m hanya diputar oleh "
+                f"{s2_uniq_b5} dompet unik ({buys_m5/float(s2_uniq_b5):.1f} klik/dompet) -> Manipulasi volume bot!"
+            ),
+        }
+    if s2_uniq_bh1 > 0 and s2_buys_h1 >= 180 and (s2_buys_h1 / float(s2_uniq_bh1)) > 7.5:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": (
+                f"MODUS #43 (Botnet Cuci Volume 1 Jam): {s2_buys_h1} klik Buy 1j hanya berasal dari "
+                f"{s2_uniq_bh1} dompet unik ({s2_buys_h1/float(s2_uniq_bh1):.1f} klik/dompet)!"
+            ),
+        }
+    if mc < 220_000.0 and s2_uniq_b5 >= 12 and s2_uniq_s5 >= int(s2_uniq_b5 * 0.95):
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": (
+                f"MODUS #43 (Eksodus Penjual Unik Stage 2): Penjual unik ({s2_uniq_s5}) menyaingi/melebihi "
+                f"pembeli unik ({s2_uniq_b5}) -> Distribusi bandar terselubung!"
+            ),
+        }
 
     # Pre-check cepat apakah token Solana ini sudah ditinggal Dev 0% & diambil alih komunitas (CTO)
     _pre_cto_flag = False
@@ -3213,6 +3460,18 @@ def audit_and_dispatch_candidate(
             "mint": mint,
             "verdict": "SKIP",
             "reason": ath_reason
+        }
+
+    # MODUS #45 (V5.2): Periksa apakah Paid-Boost dipasang tepat di pucuk distribusi sebagai perangkap bot!
+    boost_trap_ok, boost_trap_reason = evaluate_paid_boost_exit_trap(
+        best_pair, ohlcv_data, boost_amount=int(metrics.get("boost_amount") or 0)
+    )
+    if not boost_trap_ok:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": boost_trap_reason,
         }
 
     if is_evm_chain:
@@ -3336,6 +3595,19 @@ def audit_and_dispatch_candidate(
                 "reason": f"Koin >$1M tapi kedalaman 1.0 SOL tipis (amblas {depth_loss_pct:.1f}% > 6.5%) -> Rawan FDV semu!"
             }
 
+    # MODUS #43B (Fallback Anti-Wash bila API Crowd kosong): Bandingkan klik Buy 5m terhadap total seluruh holder kontrak!
+    all_holders_cnt = int(holder_meta.get("total_holders") or 0)
+    if cand_age_mins <= 180.0 and all_holders_cnt >= 15 and buys_m5 >= 80 and (buys_m5 / float(all_holders_cnt)) > 2.6:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": (
+                f"MODUS #43 (Self-Swap Wash Bot Melampaui Holder): {buys_m5} klik Buy 5m hanya diputar oleh "
+                f"total {all_holders_cnt} holders ({buys_m5/float(all_holders_cnt):.1f}x klik/holder)!"
+            ),
+        }
+
     dna_ok, dna_reason, dna_meta = classify_early_continuation_dna(
         ohlcv_data,
         best_pair,
@@ -3372,45 +3644,46 @@ def audit_and_dispatch_candidate(
             pre_edges.insert(0, "Masuk Pasca-Kocokan (Aman dari Auto-TP Bot)")
         dna_meta["pre_bot_edges"] = pre_edges[:3]
 
-    # 4. DETEKSI LAG DEXSCREENER VS HARGA SPOT REAL-TIME SLOT SOLANA DETIK INI (SOL & NON-SOL POOL UNIVERSAL V2.8)!
-    wsol_pair = next(
-        (
-            p for p in pairs
-            if (p.get("quoteToken") or {}).get("address") == SOL_MINT
-            and float(p.get("priceNative") or 0.0) > 0.0
-            and float((p.get("liquidity") or {}).get("usd") or 0.0) >= max(8000.0, liq * 0.25)
-        ),
-        None
-    )
+    # 4. DETEKSI LAG DEXSCREENER VS HARGA SPOT REAL-TIME SLOT SOLANA DETIK INI + FIX MODUS #46B (EVM Safe NoneType Guard)!
     live_drift_pct = 0.0
-    dec = int(holder_meta.get("decimals", 6))
-    tokens_ui = rt_res["out_tokens_raw"] / float(10 ** dec)
-    if tokens_ui > 0:
-        spread_adj = 1.0 - (min(MAX_ROUNDTRIP_LOSS_PCT, rt_loss_pct) / 200.0)
-        if wsol_pair:
-            dex_price_native = float(wsol_pair["priceNative"])
-            jup_exec_pn = (TEST_BUY_LAMPORTS / 1_000_000_000.0) / tokens_ui
-            jup_mid_pn = jup_exec_pn * spread_adj
-            live_drift_pct = round(((jup_mid_pn - dex_price_native) / dex_price_native) * 100.0, 2)
-        elif price_usd > 0.0 and float(rt_res.get("swap_usd_value") or 0.0) > 0.0:
-            jup_exec_usd = float(rt_res["swap_usd_value"]) / tokens_ui
-            jup_mid_usd = jup_exec_usd * spread_adj
-            live_drift_pct = round(((jup_mid_usd - price_usd) / price_usd) * 100.0, 2)
+    if not is_evm_chain and isinstance(rt_res, dict):
+        wsol_pair = next(
+            (
+                p for p in pairs
+                if (p.get("quoteToken") or {}).get("address") == SOL_MINT
+                and float(p.get("priceNative") or 0.0) > 0.0
+                and float((p.get("liquidity") or {}).get("usd") or 0.0) >= max(8000.0, liq * 0.25)
+            ),
+            None
+        )
+        dec = int(holder_meta.get("decimals", 6))
+        tokens_ui = float(rt_res.get("out_tokens_raw") or 0) / float(10 ** dec)
+        if tokens_ui > 0:
+            spread_adj = 1.0 - (min(MAX_ROUNDTRIP_LOSS_PCT, rt_loss_pct) / 200.0)
+            if wsol_pair:
+                dex_price_native = float(wsol_pair["priceNative"])
+                jup_exec_pn = (TEST_BUY_LAMPORTS / 1_000_000_000.0) / tokens_ui
+                jup_mid_pn = jup_exec_pn * spread_adj
+                live_drift_pct = round(((jup_mid_pn - dex_price_native) / dex_price_native) * 100.0, 2)
+            elif price_usd > 0.0 and float(rt_res.get("swap_usd_value") or 0.0) > 0.0:
+                jup_exec_usd = float(rt_res["swap_usd_value"]) / tokens_ui
+                jup_mid_usd = jup_exec_usd * spread_adj
+                live_drift_pct = round(((jup_mid_usd - price_usd) / price_usd) * 100.0, 2)
 
-        if live_drift_pct < -6.0:
-            return {
-                "token": f"{name} (${symbol})",
-                "mint": mint,
-                "verdict": "SKIP",
-                "reason": f"TERDETEKSI LIVE DUMP ON-CHAIN ({live_drift_pct:+.1f}% di bawah DexScreener) — Bandar baru saja banting harga!"
-            }
-        if live_drift_pct > 12.0:
-            return {
-                "token": f"{name} (${symbol})",
-                "mint": mint,
-                "verdict": "SKIP",
-                "reason": f"HARGA KABUR DULUAN ON-CHAIN (+{live_drift_pct:.1f}% di atas DexScreener) — Terlambat masuk, rawan pucuk!"
-            }
+            if live_drift_pct < -6.0:
+                return {
+                    "token": f"{name} (${symbol})",
+                    "mint": mint,
+                    "verdict": "SKIP",
+                    "reason": f"TERDETEKSI LIVE DUMP ON-CHAIN ({live_drift_pct:+.1f}% di bawah DexScreener) — Bandar baru saja banting harga!"
+                }
+            if live_drift_pct > 12.0:
+                return {
+                    "token": f"{name} (${symbol})",
+                    "mint": mint,
+                    "verdict": "SKIP",
+                    "reason": f"HARGA KABUR DULUAN ON-CHAIN (+{live_drift_pct:.1f}% di atas DexScreener) — Terlambat masuk, rawan pucuk!"
+                }
 
     # 5. KALKULASI FINAL MC REAL-TIME + JALUR KHUSUS "MASUK DI AWAL" (<$70K) VS CORRIDOR SNIPER V3.0
     live_mc = mc * (1.0 + (live_drift_pct / 100.0))
@@ -3907,7 +4180,7 @@ def run_live_market_scan(engine, config) -> dict:
     4. Kandidat elit diaudit 3-arah paralel: RugCheck + Round-Trip Jupiter (0.1 & 1.0 SOL) + 5m OHLCV Shield!
     """
     t0 = time.time()
-    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V5.1 Multi-Chain Scan (Universal Sub-$100K + All-Corridor Propulsion + 40 Modus)...", flush=True)
+    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V5.2 Multi-Chain Scan (Red-Team Hardened · 46 Modus Anti-Bot & Anti-Dev)...", flush=True)
 
     # Batasi ke 6 feed GeckoTerminal paling krusial + 5 feed DexScreener agar BEBAS HTTP 429 Rate-Limit & selesai < 4.5 detik!
     with concurrent.futures.ThreadPoolExecutor(max_workers=11) as feed_exec:
@@ -4148,7 +4421,7 @@ def run_live_market_scan(engine, config) -> dict:
 
     elapsed_ms = int((time.time() - t0) * 1000)
     print(
-        f"[VERCEL-SCAN] ✅ Batch Scan V5.1 selesai dalam {elapsed_ms}ms: "
+        f"[VERCEL-SCAN] ✅ Batch Scan V5.2 selesai dalam {elapsed_ms}ms: "
         f"{len(candidate_mints)} disaring ({len(stage2_jobs)} masuk audit dalam), {alerts_sent} alert.",
         flush=True
     )
@@ -4202,7 +4475,7 @@ class handler(BaseHTTPRequestHandler):
             chat_id = getattr(config, "TELEGRAM_CHAT_ID", None) or os.getenv("TELEGRAM_CHAT_ID")
             ledger = _load_corridor_ledger()
             response_data = {
-                "service": "Corridor Sniper V3.2 — Dual-Track: MASUK DI AWAL (<$70K Whale Pump) + Unified 24-Modus Anti-Bot & Sub-$100K Shield",
+                "service": "Corridor Sniper V5.2 — Dual-Track: MASUK DI AWAL (<$70K) + Universal Sub-$100K Physics + 46-Modus Red-Team Shield",
                 "status": "healthy",
                 "python_version": sys.version.split()[0],
                 "engine_loaded": engine is not None,
@@ -4271,11 +4544,11 @@ class handler(BaseHTTPRequestHandler):
                 }
             else:
                 test_msg = (
-                    "🔔 *[CORRIDOR SNIPER V3.5: MULTI-CHAIN (SOLANA+BSC+BASE) + SELANGKAH DI DEPAN BOT & 30-MODUS AKTIF]*\n\n"
-                    "✅ Mesin Dual-Track 75-Token Berkecepatan Tinggi terhubung ke Telegram!\n\n"
+                    "🔔 *[CORRIDOR SNIPER V5.2: MULTI-CHAIN (SOLANA+BSC+BASE+ETH) · 46 MODUS RED-TEAM ANTI-EXPLOIT AKTIF]*\n\n"
+                    "✅ Mesin Dual-Track 90-Token Berkecepatan Tinggi terhubung ke Telegram!\n\n"
                     "Dua Jenis Judul Alert yang Kini Aktif:\n"
-                    "1. 🚀 *MASUK DI AWAL:* Khusus koin perawan `< $70k` (usia `3.5-35m`) yang terbukti dipompa Paus/Modal Hangus Besar & lolos 8 Perisai Anti-Permainan Mulus `<$100k`.\n"
-                    "2. ⚡ *PRE-BOT SNIPER V3.5 (Solana + BSC + Base):* Seluruh Lorong 0–5 (`$25k` s/d `$8.8M`) lengkap dengan Perisai Terpadu 28 Modus Anti-Bot."
+                    "1. 🚀 *MASUK DI AWAL / V5.2 <$100K:* Khusus koin `< $100k` yang lolos Fisika Kurva AMM (`Skor >= 68/100`) & Pelucutan Dev.\n"
+                    "2. ⚡ *PRE-BOT SNIPER V5.2:* Seluruh Lorong 0–5 (`$25k` s/d `$8.8M`) lengkap dengan Perisai Red-Team 46 Modus Anti-Bot & Anti-Dev."
                 )
                 ok, detail = send_telegram_direct(bot_token, chat_id, test_msg)
                 response_data = {
