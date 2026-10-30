@@ -301,35 +301,43 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
     if mc < 25_000.0:
         return False, f"MC terlalu dini/tipis (${mc:,.0f} < $25k) - Rawan rug instan", {}
 
-    # ZONA MERAH 1: Tembok Take-Profit Sniper Kelulusan ($82k - $112k)
-    if 82_000.0 < mc <= 112_000.0:
+    # ZONA MERAH 1: Tembok Take-Profit Sniper Kelulusan ($86k - $108k)
+    if 86_000.0 < mc <= 108_000.0:
         return (
             False,
-            f"ZONA MERAH PLAFON $100K (${mc:,.0f}): Rawan bantingan sniper kelulusan. Tunggu tembus bersih > $112k!",
+            f"ZONA MERAH PLAFON $100K (${mc:,.0f}): Rawan bantingan sniper kelulusan. Tunggu tembus bersih > $108k!",
             {}
         )
 
-    # ZONA MERAH 2: Tembok Kematian Dev Modal Kecil ($168k - $228k)
-    if 168_000.0 < mc <= 228_000.0:
+    # ZONA MERAH 2: Tembok Kematian Dev Modal Kecil ($178k - $215k)
+    if 178_000.0 < mc <= 215_000.0:
         return (
             False,
-            f"ZONA MERAH PLAFON $200K (${mc:,.0f}): Area favorit dev receh dump. Tunggu konfirmasi > $228k!",
+            f"ZONA MERAH PLAFON $200K (${mc:,.0f}): Area favorit dev receh dump. Tunggu konfirmasi > $215k!",
             {}
         )
 
-    # ZONA MERAH 3: Mendekati / Di Dalam Tembok Psikologis $420k - $525k
-    if 315_000.0 < mc <= 525_000.0:
+    # ZONA MERAH 2B: Buffer Anti-Delay di Atas Lorong 2 ($315k - $340k)
+    if 315_000.0 < mc <= 340_000.0:
+        return (
+            False,
+            f"ZONA MERAH PLAFON $330K (${mc:,.0f}): Buffer transisi pasca-$315k, tunggu konfirmasi > $340k!",
+            {}
+        )
+
+    # ZONA MERAH 3: Mendekati / Di Dalam Tembok Psikologis $420k - $510k
+    if 420_000.0 < mc <= 510_000.0:
         return (
             False,
             f"ZONA MERAH PLAFON $450K-$500K (${mc:,.0f}): Ruang naik sempit, rawan front-run jual early whale!",
             {}
         )
 
-    # ZONA MERAH 4: Tembok Psikologis Sakral $1 Juta ($650k - $1.08M)
-    if 650_000.0 < mc <= 1_080_000.0:
+    # ZONA MERAH 4: Tembok Psikologis Sakral $1 Juta ($760k - $1.06M)
+    if 760_000.0 < mc <= 1_060_000.0:
         return (
             False,
-            f"ZONA PUCUK DISTRIBUSI TEMBOK $1M (${mc:,.0f}): Rawan bantingan take-profit angka bulat $1 Juta. Tunggu jebol bersih > $1.08M!",
+            f"ZONA PUCUK DISTRIBUSI TEMBOK $1M (${mc:,.0f}): Rawan bantingan take-profit angka bulat $1 Juta. Tunggu jebol bersih > $1.06M!",
             {}
         )
 
@@ -349,13 +357,13 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             {}
         )
 
-    # LORONG 0: Early Ignition ($25k - $82k) -> Front-run sebelum tembok $100k
-    if 25_000.0 <= mc <= 82_000.0:
-        tp_mc = min(95_000.0, mc * 1.44)
-        return True, "LORONG 0 (Early Ignition < $82k)", {
+    # LORONG 0: Early Ignition ($25k - $86k) -> Front-run sebelum tembok $100k
+    if 25_000.0 <= mc <= 86_000.0:
+        tp_mc = min(96_000.0, mc * 1.44)
+        return True, "LORONG 0 (Early Ignition < $86k)", {
             "corridor_id": 0,
             "corridor_name": "Lorong 0: Early Ignition (Sebelum Tembok $100k)",
-            "corridor_max_mc": 82_000.0,
+            "corridor_max_mc": 86_000.0,
             "min_liq": 10_500.0,
             "min_liq_ratio": 11.5,
             "min_turnover_h1": 0.55,
@@ -366,59 +374,76 @@ def classify_entry_corridor(mc: float) -> tuple[bool, str, dict]:
             "cut_loss_pct": 14.0
         }
 
-    # LORONG 1: Post-$100k Breakout ($112k - $168k) -> Tangkap pelari <$150k menuju $194k-$1M+
-    if 112_000.0 < mc <= 168_000.0:
-        tp_mc = min(194_000.0, max(mc * 1.32, 186_000.0))
+    # LORONG 1: Post-$100k Breakout ($108k - $178k) -> Tangkap pelari <$150k-$178k menuju $210k-$1M+
+    if 108_000.0 < mc <= 178_000.0:
+        tp_mc = min(208_000.0, max(mc * 1.32, 186_000.0))
         return True, "LORONG 1 (Post-$100k Breakout)", {
             "corridor_id": 1,
-            "corridor_name": "Lorong 1: Breakout Tembok $100k ($112k-$168k) -> Menuju $194k+",
-            "corridor_max_mc": 168_000.0,
+            "corridor_name": "Lorong 1: Breakout Tembok $100k ($108k-$178k) -> Menuju $208k+",
+            "corridor_max_mc": 178_000.0,
             "min_liq": 18_000.0,
             "min_liq_ratio": 11.5,
             "min_turnover_h1": 0.75,
             "mature_turnover_h1": 0.22,
             "min_cum_tx": 380,
-            "min_avg_ticket": 22.0,
+            "min_avg_ticket": 20.0,
             "target_tp_mc": tp_mc,
             "cut_loss_pct": 13.5
         }
 
-    # LORONG 2 (GOLDEN CORRIDOR): Lolos Kuburan $200k ($228k - $315k) -> Ruang Kosong ke $418k
-    if 228_000.0 < mc <= 315_000.0:
+    # LORONG 2 (GOLDEN CORRIDOR): Lolos Kuburan $200k ($215k - $315k) -> Ruang Kosong ke $418k
+    if 215_000.0 < mc <= 315_000.0:
         tp_mc = min(418_000.0, mc * 1.46)
         return True, "LORONG 2 (Golden Wave-2 Corridor)", {
             "corridor_id": 2,
             "corridor_name": "Lorong 2: Lolos Ujian $200k -> Ruang Terbang ke $400k+",
             "corridor_max_mc": 315_000.0,
-            "min_liq": 26_000.0,
-            "min_liq_ratio": 11.5,
-            "min_turnover_h1": 0.85,
+            "min_liq": 25_000.0,
+            "min_liq_ratio": 11.0,
+            "min_turnover_h1": 0.75,
             "mature_turnover_h1": 0.14,
-            "min_cum_tx": 900,
-            "min_avg_ticket": 26.0,
+            "min_cum_tx": 800,
+            "min_avg_ticket": 22.0,
             "target_tp_mc": tp_mc,
             "cut_loss_pct": 14.0
         }
 
-    # LORONG 3 (WHALE CORRIDOR): Jebol Tembok $500k ($525k - $650k) -> Magnet $1M (Keluar di $825k)
-    if 525_000.0 < mc <= 650_000.0:
-        tp_mc = min(825_000.0, mc * 1.38)
-        return True, "LORONG 3 (Whale Breakout > $525k)", {
-            "corridor_id": 3,
-            "corridor_name": "Lorong 3: Jebol Setengah Juta -> Front-Run $825k",
-            "corridor_max_mc": 650_000.0,
-            "min_liq": 48_000.0,
-            "min_liq_ratio": 8.5,
+    # LORONG 2B (MID-CAP ACCELERATION): Ekspansi $340k - $420k -> Menuju $492k+ ($HI Trajectory)
+    if 340_000.0 < mc <= 420_000.0:
+        tp_mc = min(492_000.0, max(mc * 1.28, 455_000.0))
+        return True, "LORONG 2B (Mid-Cap Acceleration $340k-$420k)", {
+            "corridor_id": 2,
+            "corridor_name": "Lorong 2B: Akselerasi Menengah ($340k-$420k) -> Front-Run $492k",
+            "corridor_max_mc": 420_000.0,
+            "min_liq": 34_000.0,
+            "min_liq_ratio": 9.5,
             "min_turnover_h1": 0.70,
-            "mature_turnover_h1": 0.09,
-            "min_cum_tx": 1800,
-            "min_avg_ticket": 30.0,
+            "mature_turnover_h1": 0.12,
+            "min_cum_tx": 1100,
+            "min_avg_ticket": 24.0,
             "target_tp_mc": tp_mc,
             "cut_loss_pct": 13.5
         }
 
-    # LORONG 4 (POST-$1M CULT IGNITION — $PONS / $STONK EARLY SUPER-RUNNER): $1.08M - $2.65M -> $4.2M + Moonbag $50M+
-    if 1_080_000.0 < mc <= 2_650_000.0:
+    # LORONG 3 (WHALE CORRIDOR): Jebol Tembok $500k ($510k - $760k) -> Magnet $1M (Keluar di $940k)
+    if 510_000.0 < mc <= 760_000.0:
+        tp_mc = min(940_000.0, mc * 1.36)
+        return True, "LORONG 3 (Whale Breakout > $510k)", {
+            "corridor_id": 3,
+            "corridor_name": "Lorong 3: Jebol Setengah Juta ($510k-$760k) -> Front-Run $940k",
+            "corridor_max_mc": 760_000.0,
+            "min_liq": 48_000.0,
+            "min_liq_ratio": 8.2,
+            "min_turnover_h1": 0.65,
+            "mature_turnover_h1": 0.09,
+            "min_cum_tx": 1600,
+            "min_avg_ticket": 26.0,
+            "target_tp_mc": tp_mc,
+            "cut_loss_pct": 13.5
+        }
+
+    # LORONG 4 (POST-$1M CULT IGNITION — $PONS / $STONK EARLY SUPER-RUNNER): $1.06M - $2.65M -> $4.2M + Moonbag $50M+
+    if 1_060_000.0 < mc <= 2_650_000.0:
         tp_mc = min(4_200_000.0, mc * 1.48)
         return True, "LORONG 4 (Post-$1M Cult Ignition)", {
             "corridor_id": 4,
@@ -677,11 +702,11 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         return False, f"Distribusi H1 berat: Penjual mendominasi 1 jam terakhir (Rasio H1 {buy_sell_ratio_h1:.2f}x)", {}
 
     is_sub100k_propulsion_flow = (
-        c_cfg["corridor_id"] == 0
-        and vol_m5 >= max(9_000.0, mc * 0.16)
+        c_cfg["corridor_id"] in (0, 1, 2, 3)
+        and vol_m5 >= max(9_000.0, mc * 0.085)
         and total_m5 >= 55
-        and buy_sell_ratio_m5 >= 1.45
-        and p_m5 >= 8.0
+        and buy_sell_ratio_m5 >= 1.28
+        and p_m5 >= 7.0
         and buy_sell_ratio_h1 >= 1.15
     )
     high_tx_organic_flow = (
@@ -699,8 +724,8 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         or is_wave2_v_reclaim
         or is_sub100k_propulsion_flow
     )
-    min_bs_m5 = (1.30 if is_mega_corridor else 1.35) if high_tx_organic_flow else 1.85
-    min_cvd = (13.0 if is_mega_corridor else 15.0) if high_tx_organic_flow else 29.8
+    min_bs_m5 = (1.30 if is_mega_corridor else (1.28 if is_sub100k_propulsion_flow else 1.35)) if high_tx_organic_flow else 1.85
+    min_cvd = (13.0 if is_mega_corridor else (12.0 if is_sub100k_propulsion_flow else 15.0)) if high_tx_organic_flow else 29.8
     h1_decay_floor = (0.80 if is_mega_corridor else 0.82) if high_tx_organic_flow else 0.90
 
     if buy_sell_ratio_m5 < min_bs_m5:
@@ -824,7 +849,9 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
                 f"Terdeteksi Botnet Micro-Order H1: Tiket 1 jam hanya ${avg_ticket_h1:.1f} (< ${min_ticket_h1:.1f} dari {total_h1} tx)",
                 {}
             )
-    if total_h1 >= 1200 and tx_per_1k_liq_h1 > 220.0 and avg_ticket_h1 < 35.0:
+    # Pada koin viral ekspansif (p_h1 >= +55% & B/S H1 >= 1.18x seperti $Foxii 16,448 tx/jam), ribuan ritel Axiom/BullX
+    # membeli klip 0.1-0.2 SOL (~$18-$30); botnet pencuci $Leonida mencuci di tempat (p_h1 rendah / B/S timpang).
+    if total_h1 >= 1200 and tx_per_1k_liq_h1 > 220.0 and avg_ticket_h1 < 35.0 and not (p_h1 >= 55.0 and avg_ticket_h1 >= 18.0 and buy_sell_ratio_h1 >= 1.18):
         return (
             False,
             f"Terdeteksi Spam Frekuensi Botnet H1: {total_h1} tx/jam pada LP ${liq:,.0f} ({tx_per_1k_liq_h1:.0f} tx/$1k LP)",
@@ -878,8 +905,8 @@ def evaluate_market_candidate(best_pair: dict, pair_count: int = 1, boost_amount
         )
 
     pre_bot_organic_bonus = (
-        5.0 if (c_cfg["corridor_id"] in (0, 1) and vol_m5 >= 5_500.0 and liq >= 12_000.0 and buy_sell_ratio_m5 >= 1.55 and (accel_ratio >= 1.15 or (vol_m5 / max(1.0, mc)) >= 0.09))
-        else 0.0
+        9.0 if is_sub100k_propulsion_flow
+        else (5.0 if (c_cfg["corridor_id"] in (0, 1) and vol_m5 >= 5_500.0 and liq >= 12_000.0 and buy_sell_ratio_m5 >= 1.55 and (accel_ratio >= 1.15 or (vol_m5 / max(1.0, mc)) >= 0.09)) else 0.0)
     )
     organic_depth_bonus = (8.0 if high_tx_organic_flow else 0.0) + (4.0 if is_wave2_v_reclaim else 0.0) + pre_bot_organic_bonus
     score = min(
@@ -2200,10 +2227,11 @@ def verify_sub100k_dev_deterrence(
 
     max_single = float(h_meta.get("max_single") or 0.0)
     pure_top10 = float(h_meta.get("pure_top10") or 0.0)
-    if max_single > 4.3:
+    max_single_cap = 5.0 if (creator_pct <= 0.5 and pure_top10 <= 20.0) else 4.3
+    if max_single > max_single_cap:
         return (
             False,
-            f"MODUS #34 (Paus Tunggal <$100K): 1 dompet EOA memegang {max_single:.1f}% (>4.3%) -> Rawan banting sebelum $100K!",
+            f"MODUS #34 (Paus Tunggal <$100K): 1 dompet EOA memegang {max_single:.1f}% (>{max_single_cap:.1f}%) -> Rawan banting sebelum $100K!",
             {},
         )
     if pure_top10 > 23.0:
@@ -2273,7 +2301,7 @@ def verify_sub100k_dev_deterrence(
         mod_tag = f"Paid Boost {eff_boost}x" if eff_boost >= 30 else "Profil Resmi + Modal LP Tebal"
         deterrence_proofs.append(f"Modal Hangus Dev ({mod_tag} -> Rugi jika banting <$100K)")
 
-    if liq_usd >= 14_000.0 and liq_mc_ratio >= 0.18 and (avg_ticket >= 125.0 or vol_m5 >= 8_500.0) and bs_ratio >= 1.55:
+    if liq_usd >= 14_000.0 and liq_mc_ratio >= 0.18 and (avg_ticket >= 125.0 or (vol_m5 >= 8_500.0 and bs_ratio >= 1.55) or (vol_m5 >= 12_000.0 and bs_ratio >= 1.32)):
         deterrence_proofs.append(f"Modal Paus Tertanam (${liq_usd:,.0f} LP / Vol ${vol_m5:,.0f} -> Impas >$140K)")
 
     if not deterrence_proofs:
@@ -2736,7 +2764,36 @@ def evaluate_ohlcv_ath_trap(
                 )
                 if is_healthy_birth_discovery:
                     has_birth_discovery_pullback = True
-                if candle_pump_pct >= 52.0 and wick_slam_pct >= 11.0 and not is_confirmed_whale_impulse and not is_healthy_birth_discovery:
+                # MODUS #40 (V5.1 — Organic Multi-Candle Staircase Breakout vs Single-Candle Bait & Slam, Kasus $Foxii $36K->$365K):
+                # Koin yang sedang menanjak sehat >=3 candle (Higher-Lows, >=2 bar hijau, Vol >=$18K, harga masih >=+25% di atas Open
+                # dan koreksi nafas <=22% dari pucuk) adalah ekspansi tangga organik, BUKAN pancingan 1-candle $Shitcoin!
+                is_organic_staircase_breakout = False
+                if len(valid_candles) >= 3:
+                    c3_st = valid_candles[-3:]
+                    green_cnt_st = sum(1 for r in c3_st if float(r[4] or 0.0) >= float(r[1] or 0.0))
+                    lows_rising_st = (
+                        float(c3_st[-1][3] or 0.0) > float(c3_st[0][3] or 0.0)
+                        and (
+                            float(c3_st[-2][3] or 0.0) >= float(c3_st[0][3] or 0.0)
+                            or (len(valid_candles) >= 5 and (h_v > o_v) and ((c_v - o_v) / (h_v - o_v)) >= 0.80 and wick_slam_pct <= 14.0)
+                        )
+                    )
+                    if (
+                        green_cnt_st >= 2
+                        and lows_rising_st
+                        and float(row[5] or 0.0) >= 18_000.0
+                        and current_price_usd >= (o_v * 1.25)
+                        and c_v >= (o_v * 1.25)
+                        and wick_slam_pct <= 22.0
+                    ):
+                        is_organic_staircase_breakout = True
+                if (
+                    candle_pump_pct >= 52.0
+                    and wick_slam_pct >= 11.0
+                    and not is_confirmed_whale_impulse
+                    and not is_healthy_birth_discovery
+                    and not is_organic_staircase_breakout
+                ):
                     return (
                         False,
                         f"Jebakan Single-Candle Bait & Slam: Harga dipompa pancingan +{candle_pump_pct:.0f}% dalam "
@@ -3850,51 +3907,40 @@ def run_live_market_scan(engine, config) -> dict:
     4. Kandidat elit diaudit 3-arah paralel: RugCheck + Round-Trip Jupiter (0.1 & 1.0 SOL) + 5m OHLCV Shield!
     """
     t0 = time.time()
-    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V3.2 Dual-Track Scan (Masuk di Awal <$70k + 24-Modus Shield)...", flush=True)
+    print("[VERCEL-SCAN] ⚡ Memulai Fast-Batch V5.1 Multi-Chain Scan (Universal Sub-$100K + All-Corridor Propulsion + 40 Modus)...", flush=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=14) as feed_exec:
+    # Batasi ke 6 feed GeckoTerminal paling krusial + 5 feed DexScreener agar BEBAS HTTP 429 Rate-Limit & selesai < 4.5 detik!
+    with concurrent.futures.ThreadPoolExecutor(max_workers=11) as feed_exec:
         f_gt_5m_p1 = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1", 2.5
-        )
-        f_gt_5m_p2 = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=2", 2.5
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=5m&page=1", 2.6
         )
         f_gt_ps = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/dexes/pumpswap/pools?page=1", 2.5
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/dexes/pumpswap/pools?page=1", 2.6
         )
-        f_ray_org = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=raydium", 2.8)
         f_gt_new = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1", 2.5
-        )
-        f_gt_bsc_5m = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?duration=5m&page=1", 2.5
-        )
-        f_gt_bsc_new = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/bsc/new_pools?page=1", 2.5
-        )
-        f_gt_base_5m = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/base/trending_pools?duration=5m&page=1", 2.5
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1", 2.6
         )
         f_gt_1h = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1", 2.5
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1", 2.6
         )
-        f_gt_6h = feed_exec.submit(
-            fetch_json, "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=6h&page=1", 2.5
+        f_gt_bsc_5m = feed_exec.submit(
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?duration=5m&page=1", 2.6
         )
+        f_gt_base_5m = feed_exec.submit(
+            fetch_json, "https://api.geckoterminal.com/api/v2/networks/base/trending_pools?duration=5m&page=1", 2.6
+        )
+        f_ray_org = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=raydium", 2.8)
         f_organic = feed_exec.submit(fetch_json, "https://api.dexscreener.com/latest/dex/search?q=pumpswap", 2.8)
         f_b_latest = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/latest/v1", 2.8)
         f_b_top = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-boosts/top/v1", 2.8)
         f_prof = feed_exec.submit(fetch_json, "https://api.dexscreener.com/token-profiles/latest/v1", 2.8)
 
         gt_5m_p1 = f_gt_5m_p1.result()
-        gt_5m_p2 = f_gt_5m_p2.result()
         gt_ps = f_gt_ps.result()
         gt_new = f_gt_new.result()
-        gt_bsc_5m = f_gt_bsc_5m.result()
-        gt_bsc_new = f_gt_bsc_new.result()
-        gt_base_5m = f_gt_base_5m.result()
         gt_1h = f_gt_1h.result()
-        gt_6h = f_gt_6h.result()
+        gt_bsc_5m = f_gt_bsc_5m.result()
+        gt_base_5m = f_gt_base_5m.result()
         organic_search = f_organic.result()
         ray_search = f_ray_org.result()
         boosts_latest = f_b_latest.result()
@@ -3946,45 +3992,42 @@ def run_live_market_scan(engine, config) -> dict:
 
     ordered_candidates.extend(_collect_gt(gt_5m_p1, "solana"))
     ordered_candidates.extend(_collect_gt(gt_bsc_5m, "bsc")[:12])
-    ordered_candidates.extend(latest_boost_items[:14])
-    ordered_candidates.extend(_collect_gt(gt_ps, "solana")[:12])
-    ordered_candidates.extend(_collect_gt(gt_new, "solana")[:10])
-    ordered_candidates.extend(_collect_gt(gt_bsc_new, "bsc")[:8])
-    ordered_candidates.extend(_collect_gt(gt_base_5m, "base")[:8])
-    ordered_candidates.extend(_collect_gt(gt_5m_p2, "solana"))
-    ordered_candidates.extend(profile_items[:10])
+    ordered_candidates.extend(latest_boost_items[:16])
+    ordered_candidates.extend(_collect_gt(gt_ps, "solana")[:14])
+    ordered_candidates.extend(_collect_gt(gt_new, "solana")[:12])
+    ordered_candidates.extend(_collect_gt(gt_base_5m, "base")[:10])
+    ordered_candidates.extend(profile_items[:12])
 
     for _org_payload in (organic_search, ray_search):
-      if isinstance(_org_payload, dict):
-        for op in (_org_payload.get("pairs") or []):
-            ch = str(op.get("chainId") or "").lower()
-            if ch in ("solana", "bsc", "base"):
-                op_mc = float(op.get("marketCap") or op.get("fdv") or 0.0)
-                op_vol5 = float((op.get("volume") or {}).get("m5") or 0.0)
-                op_addr = (op.get("baseToken") or {}).get("address")
-                if op_addr and 25_000.0 <= op_mc <= 8_800_000.0 and op_vol5 >= 1500.0:
-                    ordered_candidates.append((ch, op_addr))
+        if isinstance(_org_payload, dict):
+            for op in (_org_payload.get("pairs") or []):
+                ch = str(op.get("chainId") or "").lower()
+                if ch in ("solana", "bsc", "base"):
+                    op_mc = float(op.get("marketCap") or op.get("fdv") or 0.0)
+                    op_vol5 = float((op.get("volume") or {}).get("m5") or 0.0)
+                    op_addr = (op.get("baseToken") or {}).get("address")
+                    if op_addr and 25_000.0 <= op_mc <= 8_800_000.0 and op_vol5 >= 1500.0:
+                        ordered_candidates.append((ch, op_addr))
 
     ordered_candidates.extend(_collect_gt(gt_1h, "solana"))
-    ordered_candidates.extend(_collect_gt(gt_6h, "solana"))
-    ordered_candidates.extend(latest_boost_items[14:])
+    ordered_candidates.extend(latest_boost_items[16:])
     ordered_candidates.extend(top_boost_items)
-    ordered_candidates.extend(profile_items[10:])
+    ordered_candidates.extend(profile_items[12:])
 
     seen = set()
     by_chain_mints = {"solana": [], "bsc": [], "base": []}
-    total_selected = 0
+    candidate_mints = []  # Menyimpan (ch, norm_m, raw_m) secara berurutan (Fix V5.1 Critical NameError & EVM Case Bug!)
     for ch, m in ordered_candidates:
         norm_m = m.lower() if ch != "solana" else m
         key_cm = f"{ch}:{norm_m}"
         if key_cm not in seen and ch in by_chain_mints:
             seen.add(key_cm)
             by_chain_mints[ch].append(m)
-            total_selected += 1
-            if total_selected >= BATCH_CANDIDATE_LIMIT:
+            candidate_mints.append((ch, norm_m, m))
+            if len(candidate_mints) >= BATCH_CANDIDATE_LIMIT:
                 break
 
-    if total_selected == 0:
+    if not candidate_mints:
         return {
             "status": "scan_completed",
             "scan_duration_ms": int((time.time() - t0) * 1000),
@@ -4015,7 +4058,7 @@ def run_live_market_scan(engine, config) -> dict:
         if base_addr:
             norm_k = base_addr.lower() if ch_p != "solana" else base_addr
             fused_p = _fuse_gt_pool_if_dex_lagging(p, gt_snap_by_addr.get(norm_k))
-            pairs_by_mint.setdefault(base_addr, []).append(fused_p)
+            pairs_by_mint.setdefault(norm_k, []).append(fused_p)
 
     ref_pairs_by_mint = dict(pairs_by_mint)
     if isinstance(organic_search, dict):
@@ -4030,11 +4073,11 @@ def run_live_market_scan(engine, config) -> dict:
     stage2_jobs = []
     active_ledger = _load_corridor_ledger()
 
-    # TAHAP 1 (In-Memory ~0.2ms): Saring seluruh kandidat dengan Anti-Copycat + Dual-Track V3.2
-    for m in candidate_mints:
-        m_pairs = pairs_by_mint.get(m)
+    # TAHAP 1 (In-Memory ~0.2ms): Saring seluruh kandidat dengan Anti-Copycat + Dual-Track V5.1
+    for _ch_cand, norm_m, raw_m in candidate_mints:
+        m_pairs = pairs_by_mint.get(norm_m)
         if not m_pairs:
-            evaluations.append({"token": m[:8], "mint": m, "verdict": "SKIP", "reason": "Data pair DexScreener kosong"})
+            evaluations.append({"token": raw_m[:8], "mint": raw_m, "verdict": "SKIP", "reason": "Data pair DexScreener kosong"})
             continue
 
         sorted_p = sorted(
@@ -4043,43 +4086,44 @@ def run_live_market_scan(engine, config) -> dict:
             reverse=True
         )
         best_p = sorted_p[0]
+        canonical_mint = (best_p.get("baseToken") or {}).get("address") or raw_m
         active_cnt = sum(1 for x in sorted_p if float((x.get("liquidity") or {}).get("usd") or 0.0) >= 4000.0)
         t_name = best_p.get("baseToken", {}).get("name", "Unknown")
         t_sym = best_p.get("baseToken", {}).get("symbol", "SOL")
 
-        is_copycat, copycat_reason = _is_vampire_copycat_sub100k(m, best_p, leader_by_sym, leader_by_name)
+        is_copycat, copycat_reason = _is_vampire_copycat_sub100k(canonical_mint, best_p, leader_by_sym, leader_by_name)
         if is_copycat:
             evaluations.append({
                 "token": f"{t_name} (${t_sym})",
-                "mint": m,
+                "mint": canonical_mint,
                 "verdict": "SKIP",
                 "reason": copycat_reason
             })
             continue
 
         ok, reason, metrics = _select_dual_track_candidate(
-            best_p, pair_count=active_cnt, boost_amount=boost_map.get(m, 0)
+            best_p, pair_count=active_cnt, boost_amount=boost_map.get(norm_m, 0)
         )
         if not ok:
             evaluations.append({
                 "token": f"{t_name} (${t_sym})",
-                "mint": m,
+                "mint": canonical_mint,
                 "verdict": "SKIP",
                 "reason": reason
             })
         else:
-            c_key = f"{m}:C{metrics['corridor_id']}"
+            c_key = f"{canonical_mint}:C{metrics['corridor_id']}"
             if c_key in RECENT_ALERTED_MINTS or c_key in active_ledger:
                 evaluations.append({
                     "token": f"{t_name} (${t_sym})",
-                    "mint": m,
+                    "mint": canonical_mint,
                     "verdict": "SKIP",
                     "reason": f"Cooldown aktif untuk Lorong {metrics['corridor_id']} (anti duplikasi sinyal)"
                 })
             else:
-                stage2_jobs.append((m, sorted_p, best_p, metrics))
+                stage2_jobs.append((canonical_mint, sorted_p, best_p, metrics))
 
-    # TAHAP 2 (Paralel Eksklusif): Hanya kandidat yang lolos Lorong Aman diaudit ke RugCheck & Jupiter Round-Trip
+    # TAHAP 2 (Paralel Eksklusif): Hanya kandidat yang lolos Lorong Aman diaudit ke RugCheck/GoPlus & Round-Trip Swap
     alerts_sent = 0
     if stage2_jobs:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(stage2_jobs))) as executor:
@@ -4104,7 +4148,7 @@ def run_live_market_scan(engine, config) -> dict:
 
     elapsed_ms = int((time.time() - t0) * 1000)
     print(
-        f"[VERCEL-SCAN] ✅ Batch Scan 25-Mint selesai dalam {elapsed_ms}ms: "
+        f"[VERCEL-SCAN] ✅ Batch Scan V5.1 selesai dalam {elapsed_ms}ms: "
         f"{len(candidate_mints)} disaring ({len(stage2_jobs)} masuk audit dalam), {alerts_sent} alert.",
         flush=True
     )
