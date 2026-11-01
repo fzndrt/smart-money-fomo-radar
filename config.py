@@ -66,9 +66,13 @@ class FomoConfig:
     SOLANA_RPC_URL: str = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
 
     # =========================================================================
-    # 5. SISTEM & PERSISTENSI DATABASE
+    # 5. SISTEM, FILTER JENIS ALERT, & PERSISTENSI DATABASE
     # =========================================================================
     ONLY_SMART_MONEY_AND_INSIDER_ALERTS: bool = True
+    # V7.2: Nonaktifkan permanen alert 'SELANGKAH DI DEPAN BOT' secara default (fokus pada ALERT 1/2 & 2/2 Koin Bot Bermodal Besar)
+    ENABLE_SELANGKAH_DI_DEPAN_BOT_ALERT: bool = os.getenv(
+        "ENABLE_SELANGKAH_DI_DEPAN_BOT_ALERT", "false"
+    ).strip().lower() in ("true", "1", "yes")
 
     DATABASE_PATH: str = os.getenv(
         "DATABASE_PATH",
@@ -84,6 +88,7 @@ config = FomoConfig()
 
 # Expose atribut tingkat modul untuk kompatibilitas penuh lintas runner
 ONLY_SMART_MONEY_AND_INSIDER_ALERTS = config.ONLY_SMART_MONEY_AND_INSIDER_ALERTS
+ENABLE_SELANGKAH_DI_DEPAN_BOT_ALERT = config.ENABLE_SELANGKAH_DI_DEPAN_BOT_ALERT
 CONVERGENCE_WINDOW_SEC = config.CONVERGENCE_WINDOW_SEC
 TELEGRAM_BOT_TOKEN = config.TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID = config.TELEGRAM_CHAT_ID
