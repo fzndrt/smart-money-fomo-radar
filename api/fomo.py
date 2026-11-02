@@ -921,20 +921,56 @@ def _evaluate_crypto_police_early_hot_runner(
     s_usd_5m = float(ji.get("sell_vol_m5") or 0.0)
 
     badges = []
+    # -------------------------------------------------------------------------
+    # TRACK 1: DEV TERSANDERA MODAL HANGUS (UNRECOVERED / HEAVY DEV CAPITAL)
+    # Koin di mana developer masih tersandera modal hangus (Paid Ads/Boost >=$999, LP >=$42K, atau capital recovery < 70%).
+    # -------------------------------------------------------------------------
     if (
         has_heavy_cap
         and (accel_ratio >= 1.02 or (vol_m5 / max(1.0, mc)) >= 0.14)
         and (clicks_per_buyer <= 0.0 or clicks_per_buyer <= 4.0)
         and (b_usd_5m <= 0.0 or b_usd_5m >= (s_usd_5m * 1.15))
     ):
-        badges.append(f"Modal Besar Dev Terkunci ({cap_proofs[0]})")
+        badges.append(f"TRACK 1: Modal Besar Dev Terkunci ({cap_proofs[0]})")
 
+    # -------------------------------------------------------------------------
+    # TRACK 2: ESTAFET CTO KOMUNITAS AMAN (CROSS-MC POST-DEV DUMP RELAY IGNITION - MODUS #55)
+    # Koin yang sudah DITINGGAL DEVELOPER 100% (dev balance <= 0.20% di MC rendah / <=0.50% di MC tinggi),
+    # TETAPI diambil alih oleh massa komunitas organik murni (seperti $PEACE, $WASTED, $STONK, $PONS).
+    # LINTAS-MC: Berlaku dari MC Rendah ($32K) hingga Cult Mega-Runner ($1.2M - $8.8M -> $30M+)!
+    # -------------------------------------------------------------------------
     org_sc = float(ji.get("organic_score") or 0.0)
-    if (
+    dev_bal = float(ji.get("dev_bal_pct") or 0.0)
+    bot_pct = float(ji.get("bot_holders_pct") or 0.0)
+    
+    min_b_usd_req = max(8_000.0, min(mc * 0.08, 25_000.0 if mc >= 500_000.0 else mc * 0.12))
+    req_bs_mult = 1.25 if mc >= 500_000.0 else 1.30
+    req_dev_bal = 0.50 if mc >= 500_000.0 else 0.20
+    req_min_p_m5 = 4.0 if mc >= 500_000.0 else 8.5
+    req_min_p_h1 = 12.0 if mc >= 500_000.0 else 18.0
+
+    is_post_dev_dump_relay = bool(
+        ji
+        and dev_bal <= req_dev_bal
+        and org_sc >= 64.0
+        and bot_pct < 22.0
+        and float(ji.get("sniper_pct") or 0.0) < 9.0
+        and float(ji.get("insider_pct") or 0.0) < 5.5
+        and float(ji.get("bundle_hold_pct") or 0.0) < 6.5
+        and b_usd_5m >= min_b_usd_req
+        and b_usd_5m >= (s_usd_5m * req_bs_mult)
+        and (p_m5 >= req_min_p_m5 or p_h1 >= req_min_p_h1)
+        and (clicks_per_buyer <= 0.0 or clicks_per_buyer <= 3.6)
+    )
+    if is_post_dev_dump_relay:
+        usd_mult = b_usd_5m / max(1.0, s_usd_5m)
+        mc_tier = "Cult $1M+" if mc >= 1_000_000.0 else ("Mega $260K+" if mc >= 260_000.0 else "Base")
+        badges.append(f"TRACK 2: Estafet CTO Komunitas Aman ({mc_tier} · Dev <=0.5% · Skor {org_sc:.0f} · Arus Beli USD {usd_mult:.2f}x)")
+    elif (
         ji
         and org_sc >= 64.0
-        and float(ji.get("bot_holders_pct") or 0.0) < 24.0
-        and float(ji.get("dev_bal_pct") or 0.0) <= 0.50
+        and bot_pct < 24.0
+        and dev_bal <= 0.50
         and float(ji.get("sniper_pct") or 0.0) < 9.0
         and float(ji.get("insider_pct") or 0.0) < 5.5
         and float(ji.get("bundle_hold_pct") or 0.0) < 6.5
@@ -1811,6 +1847,17 @@ def evaluate_market_candidate(
             dex_orders_payload=dex_orders_payload,
         )
         is_dormant_whale_coil = bool(_dormant_coil_ok and _dormant_coil_meta.get("is_dormant_whale_coil") and _awakening_liq_ok)
+        _cto_min_b_usd = max(8_000.0, min(mc * 0.08, 25_000.0 if mc >= 500_000.0 else mc * 0.12))
+        _cto_req_bs = 1.25 if mc >= 500_000.0 else 1.30
+        _cto_max_dev = 0.50 if mc >= 500_000.0 else 0.20
+        is_post_dev_dump_relay = bool(
+            _jup_s1
+            and float(_jup_s1.get("dev_bal_pct") or 0.0) <= _cto_max_dev
+            and float(_jup_s1.get("organic_score") or 0.0) >= 64.0
+            and float(_jup_s1.get("bot_holders_pct") or 0.0) < 22.0
+            and float(_jup_s1.get("buy_vol_m5") or 0.0) >= _cto_min_b_usd
+            and float(_jup_s1.get("buy_vol_m5") or 0.0) >= (float(_jup_s1.get("sell_vol_m5") or 0.0) * _cto_req_bs)
+        )
         is_base_awakening_ignition = bool(
             (
                 has_heavy_dev_cap
@@ -1829,6 +1876,7 @@ def evaluate_market_candidate(
                 and (_accel_probe >= 1.35 or vol_m5 >= (mc * 0.06))
             )
             or is_dormant_whale_coil
+            or is_post_dev_dump_relay
         )
 
         if c_cfg["corridor_id"] == 0:
@@ -8007,18 +8055,25 @@ def audit_and_dispatch_candidate(
             f"`30%` di `${runner_tp2_mc:,.0f}`, & biarkan `20% Moonbag` kawal lari `+300%+` ke `${runner_tp3_mc:,.0f}+`!\n"
         )
 
-    header_title = (
-        f"🚓🔥 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT ({chain_id.upper()} V7.3)]*"
-        if use_police_hot_header
-        else (
+    is_track1_dev_hostage = any("TRACK 1" in str(b) for b in police_badges_s2)
+    is_track2_cto_relay = any("TRACK 2" in str(b) for b in police_badges_s2)
+
+    if use_police_hot_header:
+        if is_track1_dev_hostage:
+            header_title = f"🚓🔥 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT · TRACK 1: DEV TERSANDERA MODAL ({chain_id.upper()} V7.5)]*"
+        elif is_track2_cto_relay:
+            header_title = f"🚓👑 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT · TRACK 2: ESTAFET CTO KOMUNITAS AMAN ({chain_id.upper()} V7.5)]*"
+        else:
+            header_title = f"🚓🔥 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT ({chain_id.upper()} V7.5)]*"
+    else:
+        header_title = (
             f"⚡ *[SELANGKAH DI DEPAN BOT — {chain_id.upper()} OMNI-STAGE V6.0]*"
             if dna_meta.get("is_pre_bot_frontrun")
             else f"🎯 *[CORRIDOR SNIPER V6.0: UNIFIED FIRST-PRINCIPLES & 48-MODUS ({chain_id.upper()})]*"
         )
-    )
     police_badge_txt = _esc_md(" · ".join(police_badges_s2[:2])) if use_police_hot_header else ""
     pre_bot_line = (
-        f"🚓 *Bukti Lolos Interogasi Dini:* `{police_badge_txt}`\n"
+        f"🚓 *Bukti Interogasi Dual-Track:* `{police_badge_txt}`\n"
         if use_police_hot_header and police_badge_txt
         else (f"⚡ *Posisi Front-Run:* `{pre_bot_txt}`\n" if pre_bot_txt else "")
     )
