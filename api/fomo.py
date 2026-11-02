@@ -50,6 +50,7 @@ SOL_MINT = "So11111111111111111111111111111111111111112"
 HARD_QUOTE_MINTS = {
     SOL_MINT,
     "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",  # PUMP (Pump.fun Official Ecosystem Quote)
+    "6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx",  # STONK (Stonk.fun / Raydium LaunchLab Official Ecosystem Quote)
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
     "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",  # WBTC (Wormhole Official)
@@ -892,7 +893,9 @@ def _evaluate_crypto_police_early_hot_runner(
     pc = best_pair.get("priceChange") or {}
     p_m5 = float(pc.get("m5") or 0.0)
     p_h1 = float(pc.get("h1") or 0.0)
-    if p_m5 < 8.5 or p_h1 < 20.0:
+    early_min_m5 = 4.0 if mc >= 500_000.0 else (4.5 if mc >= 178_000.0 else 8.5)
+    early_min_h1 = 12.0 if mc >= 500_000.0 else (18.0 if mc >= 178_000.0 else 20.0)
+    if p_m5 < early_min_m5 or p_h1 < early_min_h1:
         return False, []
 
     volumes = best_pair.get("volume") or {}
@@ -919,6 +922,20 @@ def _evaluate_crypto_police_early_hot_runner(
     ji = best_pair.get("jup_intel") if isinstance(best_pair.get("jup_intel"), dict) else {}
     b_usd_5m = float(ji.get("buy_vol_m5") or 0.0)
     s_usd_5m = float(ji.get("sell_vol_m5") or 0.0)
+    org_sc = float(ji.get("organic_score") or 0.0)
+    dev_bal = float(ji.get("dev_bal_pct") or 0.0)
+    bot_pct = float(ji.get("bot_holders_pct") or 0.0)
+    j_holders = int(ji.get("holder_count") or 0)
+
+    is_bull_flag_coil_t1 = bool(
+        age_mins <= 65.0
+        and mc >= 178_000.0
+        and vol_h1 >= max(100_000.0, mc * 0.45)
+        and vol_m5 >= max(9_500.0, mc * 0.042)
+        and org_sc >= 65.0
+        and j_holders >= 400
+        and b_usd_5m >= max(5_500.0, s_usd_5m * 1.18)
+    )
 
     badges = []
     # -------------------------------------------------------------------------
@@ -927,25 +944,28 @@ def _evaluate_crypto_police_early_hot_runner(
     # -------------------------------------------------------------------------
     if (
         has_heavy_cap
-        and (accel_ratio >= 1.02 or (vol_m5 / max(1.0, mc)) >= 0.14)
+        and (accel_ratio >= 1.02 or (vol_m5 / max(1.0, mc)) >= 0.14 or is_bull_flag_coil_t1)
+        and (p_m5 >= 8.5 or is_bull_flag_coil_t1)
         and (clicks_per_buyer <= 0.0 or clicks_per_buyer <= 4.0)
         and (b_usd_5m <= 0.0 or b_usd_5m >= (s_usd_5m * 1.15))
     ):
         badges.append(f"TRACK 1: Modal Besar Dev Terkunci ({cap_proofs[0]})")
 
     # -------------------------------------------------------------------------
-    # TRACK 2: ESTAFET CTO KOMUNITAS AMAN (CROSS-MC POST-DEV DUMP RELAY IGNITION - MODUS #55)
-    # Koin yang sudah DITINGGAL DEVELOPER 100% (dev balance <= 0.20% di MC rendah / <=0.50% di MC tinggi),
-    # TETAPI diambil alih oleh massa komunitas organik murni (seperti $PEACE, $WASTED, $STONK, $PONS).
+    # TRACK 2: ESTAFET CTO KOMUNITAS AMAN (CROSS-MC POST-DEV DUMP RELAY IGNITION - MODUS #55 + #56)
+    # Koin yang sudah DITINGGAL DEVELOPER 100% (dev balance <= 0.20% di MC rendah / <=0.50% di MC tinggi / <=3.8% Cult >10h),
+    # TETAPI diambil alih oleh massa komunitas organik murni (seperti $PEACE, $WASTED, $MAMESUKE, $GATO).
     # LINTAS-MC: Berlaku dari MC Rendah ($32K) hingga Cult Mega-Runner ($1.2M - $8.8M -> $30M+)!
     # -------------------------------------------------------------------------
-    org_sc = float(ji.get("organic_score") or 0.0)
-    dev_bal = float(ji.get("dev_bal_pct") or 0.0)
-    bot_pct = float(ji.get("bot_holders_pct") or 0.0)
-    
-    min_b_usd_req = max(8_000.0, min(mc * 0.08, 25_000.0 if mc >= 500_000.0 else mc * 0.12))
-    req_bs_mult = 1.25 if mc >= 500_000.0 else 1.30
-    req_dev_bal = 0.50 if mc >= 500_000.0 else 0.20
+    is_cult_1m_seasoned = bool(mc >= 1_060_000.0 and age_mins > 14_400.0 and j_holders >= 2_500 and org_sc >= 70.0)
+    min_b_usd_req = (
+        max(3_500.0, min(12_000.0, mc * 0.004))
+        if is_cult_1m_seasoned
+        else max(8_000.0, min(mc * 0.08, 25_000.0 if mc >= 500_000.0 else mc * 0.12))
+    )
+    req_bs_mult = 1.18 if is_cult_1m_seasoned else (1.25 if mc >= 500_000.0 else 1.30)
+    req_dev_bal = 3.80 if is_cult_1m_seasoned else (0.50 if mc >= 500_000.0 else 0.20)
+    req_insider_cap = 8.50 if is_cult_1m_seasoned else 5.50
     req_min_p_m5 = 4.0 if mc >= 500_000.0 else 8.5
     req_min_p_h1 = 12.0 if mc >= 500_000.0 else 18.0
 
@@ -955,7 +975,7 @@ def _evaluate_crypto_police_early_hot_runner(
         and org_sc >= 64.0
         and bot_pct < 22.0
         and float(ji.get("sniper_pct") or 0.0) < 9.0
-        and float(ji.get("insider_pct") or 0.0) < 5.5
+        and float(ji.get("insider_pct") or 0.0) < req_insider_cap
         and float(ji.get("bundle_hold_pct") or 0.0) < 6.5
         and b_usd_5m >= min_b_usd_req
         and b_usd_5m >= (s_usd_5m * req_bs_mult)
@@ -965,7 +985,7 @@ def _evaluate_crypto_police_early_hot_runner(
     if is_post_dev_dump_relay:
         usd_mult = b_usd_5m / max(1.0, s_usd_5m)
         mc_tier = "Cult $1M+" if mc >= 1_000_000.0 else ("Mega $260K+" if mc >= 260_000.0 else "Base")
-        badges.append(f"TRACK 2: Estafet CTO Komunitas Aman ({mc_tier} · Dev <=0.5% · Skor {org_sc:.0f} · Arus Beli USD {usd_mult:.2f}x)")
+        badges.append(f"TRACK 2: Estafet CTO Komunitas Aman ({mc_tier} · Skor {org_sc:.0f} · Arus Beli USD {usd_mult:.2f}x)")
     elif (
         ji
         and org_sc >= 64.0
@@ -1192,6 +1212,25 @@ def evaluate_jup_onchain_intel_shield(
         )
     p_created_jup = (best_pair or {}).get("pairCreatedAt")
     age_jup_m = max(1.0, ((time.time() * 1000.0) - float(p_created_jup)) / 60000.0) if p_created_jup else 15.0
+    dev_bal_jup = float(jup_intel.get("dev_bal_pct") or 0.0)
+    if dev_bal_jup > 0.0:
+        if mc_usd >= 1_060_000.0:
+            is_jup_seasoned_cult = (
+                age_jup_m > 14_400.0
+                and int(jup_intel.get("holder_count") or 0) >= 2_500
+                and float(jup_intel.get("organic_score") or 0.0) >= 70.0
+                and bot_pct < 12.0
+                and sniper_pct < 6.0
+            )
+            max_jup_dev_pct = 3.80 if is_jup_seasoned_cult else 1.50
+        else:
+            max_jup_dev_pct = 2.50
+        if dev_bal_jup > max_jup_dev_pct:
+            return (
+                False,
+                f"MODUS #56B (Overhang Saldo Dev Jupiter): Dompet developer masih menguasai {dev_bal_jup:.2f}% suplai "
+                f"(> batas aman {max_jup_dev_pct:.2f}% pada usia {age_jup_m:.0f}m) -> Rawan banting!",
+            )
     cons_ok, cons_reason = _verify_bundler_supply_conservation(best_pair, mc_usd, age_minutes=age_jup_m)
     if not cons_ok:
         return False, cons_reason
@@ -1411,8 +1450,9 @@ def _evaluate_wall_absorption_override(
         )
     )
 
-    # MODE B (V7.1 Heavy-Dev-Capital Staircase Absorption — WAJIB `has_heavy_dev_cap == True`!):
+    # MODE B (V7.1 + V7.6 Heavy-Dev-Capital Staircase & Bull-Flag Absorption — WAJIB `has_heavy_dev_cap == True`!):
     req_sov_holders = 280 if mc <= 108_000.0 else 450
+    req_sov_bs = 1.28 if (org_score >= 68.0 and int(jup_intel.get("holder_count") or 0) >= 450) else 1.45
     is_sovereign_staircase_absorption = bool(
         has_heavy_dev_cap
         and jup_intel
@@ -1422,17 +1462,17 @@ def _evaluate_wall_absorption_override(
         and p_h6 >= 12.0
         and tot_m5 >= 18
         and b_m5 > s_m5
-        and (b_m5 / float(max(1, s_m5))) >= 1.45
+        and (b_m5 / float(max(1, s_m5))) >= req_sov_bs
         and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.35
         and float(jup_intel.get("sniper_pct") or 0.0) < 5.0
         and float(jup_intel.get("bundle_hold_pct") or 0.0) < 5.0
         and int(jup_intel.get("holder_count") or 0) >= req_sov_holders
         and org_score >= 48.0
         and (
-            wall_impulse_ratio >= 0.65
+            wall_impulse_ratio >= (0.45 if org_score >= 68.0 else 0.65)
             or (
                 float(jup_intel.get("buy_vol_m5") or 0.0) >= 1_800.0
-                and float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.55
+                and float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * (1.22 if org_score >= 68.0 else 1.55)
             )
         )
     )
@@ -1758,11 +1798,13 @@ def evaluate_market_candidate(
     p_m5 = float(price_change.get("m5", 0.0) or 0.0)
     p_h1 = float(price_change.get("h1", 0.0) or 0.0)
     p_h6 = float(price_change.get("h6", 0.0) or 0.0)
+    p_h24 = float(price_change.get("h24", 0.0) or 0.0)
 
     pair_created_at_ms = best_pair.get("pairCreatedAt")
     now_ms = time.time() * 1000.0
     is_cto_multi_day_breakout = False
     is_base_awakening_ignition = False
+    is_verified_mature_cult = False
     is_mega_corridor = c_cfg["corridor_id"] in (4, 5)
     _jup_s1 = best_pair.get("jup_intel") if isinstance(best_pair.get("jup_intel"), dict) else {}
 
@@ -1801,9 +1843,32 @@ def evaluate_market_candidate(
         if age_minutes < _min_safe_age:
             return False, f"Terlalu baru ({age_minutes:.1f}m < {_min_safe_age:.1f}m): Fase rawan MEV bundle block-0", {}
 
+        # V7.6 MODUS #56B: Fisika Koin Cult Multi-Minggu (>10 hari, >=2.500 holders murni, OrganicScore >=70, Bot <12%, LP >=$85k/$210k)
+        # Contoh nyata: $GATO (GTA6CAT) konsolidasi 55 hari di $1.2M-$1.9M lalu jebol $2.0M -> $12.08M dengan Vol 1j spot $38k-$61k!
+        is_verified_mature_cult = bool(
+            is_mega_corridor
+            and age_minutes > 14_400.0
+            and liq >= c_cfg["min_liq"]
+            and _jup_s1
+            and int(_jup_s1.get("holder_count") or 0) >= 2_500
+            and float(_jup_s1.get("organic_score") or 0.0) >= 70.0
+            and float(_jup_s1.get("bot_holders_pct") or 0.0) < 12.0
+            and float(_jup_s1.get("dev_bal_pct") or 0.0) <= 3.80
+            and float(_jup_s1.get("sniper_pct") or 0.0) < 6.0
+            and float(_jup_s1.get("bundle_hold_pct") or 0.0) < 5.0
+        )
+
         cto_liq_req = {1: 28_000.0, 2: 40_000.0, 3: 48_000.0, 4: 85_000.0, 5: 210_000.0}.get(c_cfg["corridor_id"], 999_999.0)
-        cto_vol_h1_req = {1: 25_000.0, 2: 35_000.0, 3: 35_000.0, 4: 85_000.0, 5: 180_000.0}.get(c_cfg["corridor_id"], 999_999.0)
-        cto_tx24_req = {1: 650, 2: 900, 3: 1100, 4: 1600, 5: 2400}.get(c_cfg["corridor_id"], 99_999)
+        cto_vol_h1_req = (
+            {4: 28_000.0, 5: 65_000.0}.get(c_cfg["corridor_id"], 85_000.0)
+            if is_verified_mature_cult
+            else {1: 25_000.0, 2: 35_000.0, 3: 35_000.0, 4: 85_000.0, 5: 180_000.0}.get(c_cfg["corridor_id"], 999_999.0)
+        )
+        cto_tx24_req = (
+            {4: 900, 5: 1_500}.get(c_cfg["corridor_id"], 1_600)
+            if is_verified_mature_cult
+            else {1: 650, 2: 900, 3: 1100, 4: 1600, 5: 2400}.get(c_cfg["corridor_id"], 99_999)
+        )
         is_cto_multi_day_breakout = (
             age_minutes > 1440.0
             and c_cfg["corridor_id"] in (1, 2, 3, 4, 5)
@@ -1820,9 +1885,10 @@ def evaluate_market_candidate(
         _not_climax_wreck = not (75.0 <= age_minutes <= 1440.0 and vol_h24 > (vol_h1 * 1.5) and vol_h24 >= (mc * 5.0))
         _bs_m5_probe = buys_m5 / float(max(1, sells_m5))
         _bs_h1_probe = (buys_h1 / float(max(1, sells_h1))) if (buys_h1 + sells_h1) > 0 else 1.5
+        _jup_max_dev_sov = 3.80 if is_verified_mature_cult else (0.35 if _cid == 0 else 0.50)
         _jup_clean_sov = bool(
             _jup_s1
-            and float(_jup_s1.get("dev_bal_pct") or 0.0) <= (0.35 if _cid == 0 else 0.50)
+            and float(_jup_s1.get("dev_bal_pct") or 0.0) <= _jup_max_dev_sov
             and float(_jup_s1.get("sniper_pct") or 0.0) < 5.5
             and float(_jup_s1.get("bundle_hold_pct") or 0.0) < 5.5
             and int(_jup_s1.get("holder_count") or 0) >= (
@@ -1847,9 +1913,13 @@ def evaluate_market_candidate(
             dex_orders_payload=dex_orders_payload,
         )
         is_dormant_whale_coil = bool(_dormant_coil_ok and _dormant_coil_meta.get("is_dormant_whale_coil") and _awakening_liq_ok)
-        _cto_min_b_usd = max(8_000.0, min(mc * 0.08, 25_000.0 if mc >= 500_000.0 else mc * 0.12))
-        _cto_req_bs = 1.25 if mc >= 500_000.0 else 1.30
-        _cto_max_dev = 0.50 if mc >= 500_000.0 else 0.20
+        _cto_min_b_usd = (
+            max(3_500.0, min(12_000.0, mc * 0.004))
+            if is_verified_mature_cult
+            else max(8_000.0, min(mc * 0.08, 25_000.0 if mc >= 500_000.0 else mc * 0.12))
+        )
+        _cto_req_bs = 1.18 if is_verified_mature_cult else (1.25 if mc >= 500_000.0 else 1.30)
+        _cto_max_dev = 3.80 if is_verified_mature_cult else (0.50 if mc >= 500_000.0 else 0.20)
         is_post_dev_dump_relay = bool(
             _jup_s1
             and float(_jup_s1.get("dev_bal_pct") or 0.0) <= _cto_max_dev
@@ -1948,8 +2018,8 @@ def evaluate_market_candidate(
         )
         or (
             is_cto_multi_day_breakout
-            and p_h1 >= (14.0 if is_mega_corridor else 15.0)
-            and p_h6 >= 12.0
+            and p_h1 >= (5.0 if is_verified_mature_cult else (14.0 if is_mega_corridor else 15.0))
+            and p_h6 >= (8.0 if is_verified_mature_cult else 12.0)
         )
         or is_base_awakening_ignition
     )
@@ -1967,9 +2037,30 @@ def evaluate_market_candidate(
         and float(_jup_s1.get("organic_score") or 0.0) >= 60.0
     )
 
-    if is_proven_climber and is_mega_corridor:
+    is_post_graduation_bull_flag = bool(
+        not is_pre_grad_curve
+        and age_minutes <= 65.0
+        and has_heavy_dev_cap
+        and c_cfg["corridor_id"] in (1, 2)
+        and liq >= max(c_cfg["min_liq"], 28_000.0)
+        and vol_h1 >= max(100_000.0, mc * 0.45)
+        and vol_m5 >= max(9_500.0, mc * 0.042)
+        and p_h1 >= 22.0
+        and (
+            not _jup_s1
+            or (
+                float(_jup_s1.get("organic_score") or 0.0) >= 65.0
+                and int(_jup_s1.get("holder_count") or 0) >= 400
+                and (_j_b5 <= 0.0 or _j_b5 >= _j_s5 * 1.18)
+            )
+        )
+    )
+
+    if is_verified_mature_cult and is_proven_climber:
+        min_p_m5 = 3.5
+    elif is_proven_climber and is_mega_corridor:
         min_p_m5 = 4.0
-    elif is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall")):
+    elif is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall")) or is_post_graduation_bull_flag:
         min_p_m5 = 4.5
     elif is_proven_climber:
         min_p_m5 = 5.0
@@ -2004,7 +2095,12 @@ def evaluate_market_candidate(
         return False, f"Tren makro sedang distribusi/merah (H1: {p_h1:+.1f}%, H6: {p_h6:+.1f}%)", {}
 
     # Anti Dead-Cat Bounce: koin >= 60 menit yang sempat ambruk lalu pantul kecil di 5m terakhir
-    if age_minutes >= 60.0 and p_h1 < (p_m5 * 0.60) and not is_wave2_v_reclaim:
+    if (
+        age_minutes >= 60.0
+        and p_h1 < (p_m5 * 0.60)
+        and not is_wave2_v_reclaim
+        and not (is_verified_mature_cult and p_h1 >= 4.5 and p_h6 >= 8.0)
+    ):
         return (
             False,
             f"Jebakan Dead-Cat Bounce: Pantulan 5m (+{p_m5:.1f}%) di tengah tren 1 jam lemah (+{p_h1:.1f}%)",
@@ -2014,7 +2110,7 @@ def evaluate_market_candidate(
     # 5. LAYER 3D (V7.0 — Elastisitas Kepadatan Transaksi Berbasis Kecepatan, Intensitas Modal, & Base Awakening):
     chain_id_s1 = str(best_pair.get("chainId") or "solana").lower()
     base_min_cum_tx = (
-        {1: 650, 2: 900, 3: 1100, 4: 1600, 5: 2400}.get(c_cfg["corridor_id"], c_cfg["min_cum_tx"])
+        ({4: 900, 5: 1_500}.get(c_cfg["corridor_id"], 1_600) if is_verified_mature_cult else {1: 650, 2: 900, 3: 1100, 4: 1600, 5: 2400}.get(c_cfg["corridor_id"], c_cfg["min_cum_tx"]))
         if is_cto_multi_day_breakout
         else c_cfg["min_cum_tx"]
     )
@@ -2029,6 +2125,8 @@ def evaluate_market_candidate(
             effective_min_cum_tx,
             {0: 140, 1: 180, 2: 240, 3: 340, 4: 800, 5: 1200}.get(c_cfg["corridor_id"], 240),
         )
+    elif is_post_graduation_bull_flag and age_minutes <= 38.0 and cum_tx_24h >= 320 and _tx_per_min_live >= 16.0:
+        effective_min_cum_tx = min(effective_min_cum_tx, max(320, int(age_minutes * 18.0)))
     elif is_pre_grad_curve and age_minutes <= 15.0 and _vol_m5_s1 >= max(5_500.0, mc * 0.12) and _tx_per_min_live >= 20.0:
         effective_min_cum_tx = min(effective_min_cum_tx, max(65, int(age_minutes * 22.0)))
     elif (
@@ -2047,14 +2145,31 @@ def evaluate_market_candidate(
             {}
         )
 
-    # 6. Dominasi Pembeli Nyata & Kesehatan Orderflow 1 Jam (Kalibrasi MEV Arbitrase & Seller-Dry Base Awakening)
-    min_total_m5_req = 14 if (is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall"))) else 25
+    # 6. Dominasi Pembeli Nyata & Kesehatan Orderflow 1 Jam (Kalibrasi MEV Arbitrase Multi-Pool Cult & Seller-Dry Base Awakening)
+    min_total_m5_req = 14 if (is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall")) or is_verified_mature_cult) else 25
     if total_m5 < min_total_m5_req or sells_m5 >= buys_m5:
         return False, f"Partisipasi pembeli lemah ({buys_m5}B / {sells_m5}S)", {}
 
     buy_sell_ratio_m5 = buys_m5 / max(1, sells_m5)
     buy_sell_ratio_h1 = buys_h1 / max(1, sells_h1) if (buys_h1 + sells_h1) > 0 else 1.5
-    if (buys_h1 + sells_h1) >= 80 and buy_sell_ratio_h1 < 1.05:
+    # V7.6 MODUS #56B: Pada koin Cult >$1.06M multi-pool (seperti $GATO $2M-$12M dengan 7-14 pool PumpSwap + Meteora),
+    # paus spot membeli klip besar ($500-$3,000) sementara bot arbitrase MEV memecah penyeimbangan jual ke ratusan klip $20
+    # sehingga jumlah klik H1 bisa 0.80x-1.02x padahal harga naik hijau di M5/H1/H6 dan USD buyVolume >= sellVolume!
+    is_mev_arb_green_cult = bool(
+        is_mega_corridor
+        and (is_verified_mature_cult or pair_count >= 2)
+        and liq >= c_cfg["min_liq"]
+        and p_h1 >= 5.0
+        and p_h6 >= 8.0
+        and buy_sell_ratio_m5 >= 1.30
+        and (
+            not _jup_s1
+            or float(_jup_s1.get("buy_vol_h1") or 0.0) >= (float(_jup_s1.get("sell_vol_h1") or 0.0) * 0.98)
+            or (_j_b5 > 0.0 and _j_b5 >= (_j_s5 * 1.15))
+        )
+    )
+    min_bs_h1_gate = 0.78 if is_mev_arb_green_cult else 1.05
+    if (buys_h1 + sells_h1) >= 80 and buy_sell_ratio_h1 < min_bs_h1_gate:
         return False, f"Distribusi H1 berat: Penjual mendominasi 1 jam terakhir (Rasio H1 {buy_sell_ratio_h1:.2f}x)", {}
 
     is_sub100k_propulsion_flow = (
@@ -2067,9 +2182,9 @@ def evaluate_market_candidate(
     )
     high_tx_organic_flow = (
         (
-            total_m5 >= (60 if is_mega_corridor else 80)
+            total_m5 >= (28 if is_verified_mature_cult else (60 if is_mega_corridor else 80))
             and is_proven_climber
-            and buy_sell_ratio_h1 >= (1.12 if is_mega_corridor else 1.18)
+            and buy_sell_ratio_h1 >= (0.78 if is_mev_arb_green_cult else (1.12 if is_mega_corridor else 1.18))
         )
         or (
             is_hyper_wave1_ignition
@@ -2080,10 +2195,11 @@ def evaluate_market_candidate(
         or is_wave2_v_reclaim
         or is_sub100k_propulsion_flow
         or is_base_awakening_ignition
+        or is_post_graduation_bull_flag
         or bool(c_cfg.get("wall_absorption_breakout"))
     )
-    min_bs_m5 = (1.30 if is_mega_corridor else (1.28 if is_sub100k_propulsion_flow else 1.35)) if high_tx_organic_flow else 1.85
-    min_cvd = (13.0 if is_mega_corridor else (12.0 if is_sub100k_propulsion_flow else 15.0)) if high_tx_organic_flow else 29.8
+    min_bs_m5 = (1.30 if is_mega_corridor else (1.28 if (is_sub100k_propulsion_flow or is_post_graduation_bull_flag) else 1.35)) if high_tx_organic_flow else 1.85
+    min_cvd = (13.0 if is_mega_corridor else (12.0 if (is_sub100k_propulsion_flow or is_post_graduation_bull_flag) else 15.0)) if high_tx_organic_flow else 29.8
     h1_decay_floor = (0.80 if is_mega_corridor else 0.82) if high_tx_organic_flow else 0.90
 
     if buy_sell_ratio_m5 < min_bs_m5:
@@ -2145,7 +2261,9 @@ def evaluate_market_candidate(
             {}
         )
 
-    if is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall")):
+    if is_verified_mature_cult:
+        req_turnover_h1 = 0.014 if c_cfg["corridor_id"] == 4 else 0.010
+    elif is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall")):
         req_turnover_h1 = 0.022
     else:
         req_turnover_h1 = c_cfg["mature_turnover_h1"] if is_proven_climber else c_cfg["min_turnover_h1"]
@@ -2156,12 +2274,17 @@ def evaluate_market_candidate(
             {}
         )
 
-    # 9. Akselerasi Uang Segar (Fresh Money Surge)
+    # 9. Akselerasi Uang Segar (Fresh Money Surge) + Kalibrasi Bull-Flag Pasca-Graduasi ($MAMESUKE) & Steady Cult ($GATO)
     effective_h1_mins = min(60.0, max(6.0, age_minutes))
     vol_rate_m5 = vol_m5 / 5.0
     vol_rate_h1 = vol_h1 / effective_h1_mins
     accel_ratio = vol_rate_m5 / max(1.0, vol_rate_h1)
-    min_accel = 0.92 if high_tx_organic_flow else 1.05
+    if is_post_graduation_bull_flag and p_m5 >= 4.5 and buy_sell_ratio_m5 >= 1.28:
+        min_accel = 0.28
+    elif is_verified_mature_cult and p_m5 >= 3.5 and buy_sell_ratio_m5 >= 1.30:
+        min_accel = 0.72
+    else:
+        min_accel = 0.92 if high_tx_organic_flow else 1.05
     if age_minutes >= 15.0 and accel_ratio < min_accel and (vol_m5 / max(1.0, mc)) < 0.10:
         return (
             False,
@@ -2248,7 +2371,11 @@ def evaluate_market_candidate(
     avg_ticket_h1 = vol_h1 / max(1, total_h1)
     tx_per_1k_liq_h1 = total_h1 / max(1.0, liq / 1000.0)
     if total_h1 >= 250:
-        min_ticket_h1 = max(16.0, effective_min_ticket * 0.78)
+        min_ticket_h1 = (
+            18.0
+            if (is_verified_mature_cult and avg_ticket >= 45.0 and tx_per_1k_liq_h1 <= 40.0)
+            else max(16.0, effective_min_ticket * 0.78)
+        )
         if avg_ticket_h1 < min_ticket_h1:
             return (
                 False,
@@ -4466,11 +4593,12 @@ def analyze_holders_and_lp_lock(
         if ext_names & {"permanentdelegate", "transferhook", "nontransferable"}:
             return False, "Ekstensi berbahaya Token-2022 terdeteksi (PermanentDelegate / TransferHook)", {}
 
-    # 3. Verifikasi Kepemilikan Dev Asli <= 2.5% (Syarat Koin Ditinggal / Bersih dari Dev)
+    # 3. Verifikasi Kepemilikan Dev Asli <= 2.5% (atau <= 3.8% KHUSUS Cult >10 hari, >=3.000 holders & >=$85k LP Lock seperti $GATO)
     creator_bal_raw = float(rug_data.get("creatorBalance") or 0.0)
     creator_pct = (creator_bal_raw / supply_raw * 100.0) if supply_raw > 0 else 0.0
-    if creator_pct > 2.5:
-        return False, f"Dev masih memegang {creator_pct:.1f}% suplai (> 2.5%) - Rawan dev dump!", {}
+    _pre_seasoned_cult_cap = 3.80 if (mc_usd >= 1_060_000.0 and age_minutes > 14_400.0 and int(rug_data.get("totalHolders") or 0) >= 3_000) else 2.50
+    if creator_pct > _pre_seasoned_cult_cap:
+        return False, f"Dev masih memegang {creator_pct:.1f}% suplai (> {_pre_seasoned_cult_cap:.1f}%) - Rawan dev dump!", {}
 
     holders = rug_data.get("topHolders") or rug_data.get("holders") or []
     if not holders:
@@ -4703,14 +4831,32 @@ def analyze_holders_and_lp_lock(
                 {}
             )
 
-    # V3.0 + V3.2 (#17) + V3.3/V3.4 (#28): Anti-Compact Transfer-Cluster, Anti-Sybil Web, & Swarm Botnet >=30 Wallets
+    # V3.0 + V3.2 (#17) + V3.3/V3.4 (#28) + V7.6 MODUS #56A (Pigeonhole Supply Conservation vs Vault-Inflated `insiderNetworks`):
+    # Pada koin multi-pool resmi (seperti $MAMESUKE di Stonk.fun/Raydium CPMM + Meteora DLMM), RugCheck `insiderNetworks`
+    # kerap menghitung token yang dialirkan ke vault kolam (`size=4, currentHolding=53%` karena 36.5% berada di vault DLMM/CPMM),
+    # padahal Top-25 holder penuh membuktikan `max_single_pure = 4.09%` dan `top10_pure = 13.4%` (`4` EOA mustahil memegang > `sum(top 4)`!).
+    can_bound_vault_transfer_graph = bool(
+        len(holders) >= 20
+        and len(pure_holdings) >= 10
+        and pool_total_pct >= 15.0
+        and insider_count == 0
+        and max_single_pure <= 4.5
+        and top10_pure_pct <= 19.5
+    )
     if supply_raw > 0.0 and mc_usd < 1_080_000.0 and (total_holders == 0 or total_holders < 3500):
         total_insider_net_pct = 0.0
         for net in (rug_data.get("insiderNetworks") or []):
             if isinstance(net, dict):
                 net_size = int(net.get("activeAccounts") or net.get("size") or 0)
                 if net_size >= 2:
-                    net_hold_pct = (float(net.get("currentHolding") or 0.0) / supply_raw) * 100.0
+                    raw_net_hold_pct = (float(net.get("currentHolding") or 0.0) / supply_raw) * 100.0
+                    net_hold_pct = raw_net_hold_pct
+                    if can_bound_vault_transfer_graph and net_size <= 25:
+                        k_slice = min(net_size, len(pure_holdings))
+                        tail_pct = float(pure_holdings[-1]["pct"]) if pure_holdings else 0.5
+                        pigeonhole_eoa_cap = sum(float(x["pct"]) for x in pure_holdings[:k_slice]) + max(0, net_size - k_slice) * tail_pct
+                        if raw_net_hold_pct > (pigeonhole_eoa_cap * 1.35):
+                            net_hold_pct = round(pigeonhole_eoa_cap, 2)
                     total_insider_net_pct += net_hold_pct
                     if mc_usd < 525_000.0 and (total_holders == 0 or total_holders < 2500):
                         if 2 <= net_size <= 12 and net_hold_pct >= 12.5:
@@ -4772,17 +4918,30 @@ def analyze_holders_and_lp_lock(
             )
 
     # Validasi Khusus Koin Multi-Hari / CTO (> 36 Jam) & Cult Mega-Runner (> $1.08M):
-    if mc_usd >= 1_080_000.0 and creator_pct > 1.5:
+    # V7.6 MODUS #56B: Dompet founder/treasury yang sudah bertahan >10 hari (>14,400m) tanpa dump pada Cult >=$1.06M
+    # dengan >=3.000 holders & LP Terkunci >=95% (>=$85.000) diizinkan s/d <=3.8%, sedangkan koin muda/tipis tetap <=1.5%/1.0%!
+    is_seasoned_cult_diamond_dev = bool(
+        mc_usd >= 1_060_000.0
+        and age_minutes > 14_400.0
+        and total_holders >= 3_000
+        and primary_lp_locked_pct >= 95.0
+        and primary_locked_usd >= 85_000.0
+        and insider_count == 0
+        and max_single_pure <= 4.5
+    )
+    mega_dev_cap = 3.80 if is_seasoned_cult_diamond_dev else 1.50
+    if mc_usd >= 1_080_000.0 and creator_pct > mega_dev_cap:
         return (
             False,
-            f"Koin Mega-Cap (${mc_usd:,.0f}) tapi Dev masih memegang {creator_pct:.1f}% (> 1.5%) -> Rawan dev dump besar!",
+            f"Koin Mega-Cap (${mc_usd:,.0f}) tapi Dev masih memegang {creator_pct:.1f}% (> {mega_dev_cap:.1f}%) -> Rawan dev dump besar!",
             {}
         )
     if age_minutes > 2160.0:
-        if creator_pct > 1.0:
+        multiday_dev_cap = 3.80 if is_seasoned_cult_diamond_dev else 1.00
+        if creator_pct > multiday_dev_cap:
             return (
                 False,
-                f"Koin multi-hari ({age_minutes/60.0:.0f}j) tapi Dev masih memegang {creator_pct:.1f}% (> 1.0%) -> Rawan dev dump!",
+                f"Koin multi-hari ({age_minutes/60.0:.0f}j) tapi Dev masih memegang {creator_pct:.1f}% (> {multiday_dev_cap:.1f}%) -> Rawan dev dump!",
                 {}
             )
         min_cto_holders = 800 if mc_usd >= 228_000.0 else 600
@@ -4797,7 +4956,7 @@ def analyze_holders_and_lp_lock(
     # Pada koin bersih tanpa insider (insider_count == 0, dev <= 1.0%, max_single <= 4.5%), batas Top-10 Pure
     # bergerak mulus secara matematis mengikuti pengurasan pool (`outside_pool_pct` 65%->95%) & lebar komunitas
     # (`total_holders` 450->2.000+), sementara koin sempit/ber-insider tetap dikunci ketat di 19.5%!
-    if insider_count == 0 and creator_pct <= 1.0 and max_single_pure <= 4.5 and outside_pool_pct >= 72.0 and total_holders >= 450:
+    if insider_count == 0 and (creator_pct <= 1.0 or is_seasoned_cult_diamond_dev) and max_single_pure <= 4.5 and outside_pool_pct >= 72.0 and total_holders >= 450:
         _dep_f = min(1.0, max(0.0, (outside_pool_pct - 65.0) / 25.0))
         _brd_f = min(1.0, max(0.0, (float(total_holders) - 350.0) / 850.0))
         _smooth_cap = 19.5 + (5.5 * _dep_f * _brd_f)
@@ -6358,12 +6517,29 @@ def evaluate_ohlcv_ath_trap(
                         and wick_slam_pct <= 22.0
                     ):
                         is_organic_staircase_breakout = True
+                # V7.6 MODUS #56A (Post-Graduation Bull-Flag Shelf vs Bait & Slam, Kasus $MAMESUKE $200k->$1.59M):
+                # Jika jarum awal pada bar sebelumnya (`idx_r == 0`) diikuti oleh bar konsolidasi hijau/stabil (`nxt_c >= nxt_o * 0.97`)
+                # yang tetap menahan >=68% puncak jarum & >=1.30x di atas Open awal dengan dukungan modal besar dev, itu adalah Bull-Flag!
+                is_bull_flag_shelf_hold = False
+                if (
+                    len(recent_two) == 2
+                    and idx_r == 0
+                    and age_minutes <= 60.0
+                    and has_heavy_dev_capital
+                    and float(row[5] or 0.0) >= 20_000.0
+                    and current_price_usd >= (o_v * 1.30)
+                    and current_price_usd >= (h_v * 0.68)
+                    and float(recent_two[1][4] or 0.0) >= (float(recent_two[1][1] or 0.0) * 0.97)
+                    and wick_slam_pct <= 32.0
+                ):
+                    is_bull_flag_shelf_hold = True
                 if (
                     candle_pump_pct >= 52.0
                     and wick_slam_pct >= 11.0
                     and not is_confirmed_whale_impulse
                     and not is_healthy_birth_discovery
                     and not is_organic_staircase_breakout
+                    and not is_bull_flag_shelf_hold
                 ):
                     return (
                         False,
@@ -6542,7 +6718,18 @@ def evaluate_ohlcv_ath_trap(
         recent_wave_high = max(float(r[2] or 0.0) for r in recent_wave_slice)
         recent_wave_dd_pct = round(((recent_wave_high - current_price_usd) / recent_wave_high) * 100.0, 1) if recent_wave_high > current_price_usd else 0.0
         recent_wave_ath_mc = round(current_mc_usd * (recent_wave_high / current_price_usd), 0) if recent_wave_high > 0.0 else 0.0
-        if active_ceiling > 0.0 and recent_wave_dd_pct >= 6.5 and recent_wave_ath_mc >= (active_ceiling * 1.03):
+        is_bull_flag_ceiling_coil = False
+        if (
+            len(recent_wave_slice) >= 3
+            and age_minutes <= 60.0
+            and (has_heavy_dev_capital or is_verified_cto)
+            and float(recent_wave_slice[-1][2] or 0.0) < recent_wave_high
+            and float(recent_wave_slice[-2][2] or 0.0) < recent_wave_high
+            and min(float(recent_wave_slice[-2][4] or 0.0), float(recent_wave_slice[-1][4] or 0.0)) >= (recent_wave_high * 0.68)
+            and float(recent_wave_slice[-1][4] or 0.0) >= float(recent_wave_slice[-1][1] or 0.0)
+        ):
+            is_bull_flag_ceiling_coil = True
+        if active_ceiling > 0.0 and recent_wave_dd_pct >= 6.5 and recent_wave_ath_mc >= (active_ceiling * 1.03) and not is_bull_flag_ceiling_coil:
             return (
                 False,
                 f"Jebakan Penolakan Plafon Zona Merah: Jarum sudah menabrak atap ~${recent_wave_ath_mc:,.0f} "
@@ -6922,7 +7109,7 @@ def _synthesize_verified_solana_rug_fallback(
 
     grad_pool = str(ja.get("graduatedPool") or "").strip()
     launchpad = str(ja.get("launchpad") or "").strip().lower()
-    trusted_launchpads = {"pump.fun", "letsbonk.fun", "raydium-launchlab", "launchlab", "boop", "moonshot"}
+    trusted_launchpads = {"pump.fun", "letsbonk.fun", "raydium-launchlab", "launchlab", "stonkfun", "stonk.fun", "boop", "moonshot"}
 
     markets = []
     primary_pair_addr = str(best_pair.get("pairAddress") or "")
@@ -7543,7 +7730,46 @@ def audit_and_dispatch_candidate(
                 "reason": "Audit RugCheck timeout / belum siap (Fail-Closed: Lindungi modal)"
             }
 
-        rug_score = int(rug_data.get("score", 0))
+        # V7.6 MODUS #56A (Verifikasi Benteng Kunci LP Kolam Utama vs False-Positive Kolam Sekunder DLMM Tak Terkunci):
+        # Contoh nyata $MAMESUKE: Kolam utama graduasi Raydium CPMM (`HPeXru...p5ku`) TERKUNCI 100% ($92.5k LP, Vol $2.29M),
+        # namun penyedia likuiditas membuka kolam sekunder Meteora DLMM tanpa kunci sehingga RugCheck memberi `score=9139`
+        # dengan risiko tunggal `"Large Amount of LP Unlocked"`. Selama kolam eksekusi utama kita TERBUKTI >=95% Locked
+        # (>=$25,000 & >=8% MC, backing keras >=32%), kurangi hanya penalti risiko LP sekunder tak terkunci tersebut
+        # (sementara koin rug yang kolam utamanya sendiri tidak dikunci TETAP 100% DITOLAK!).
+        has_verified_primary_fortress = False
+        if pair_address and isinstance(rug_data.get("markets"), list):
+            for _m_chk in rug_data["markets"]:
+                if not isinstance(_m_chk, dict):
+                    continue
+                if str(_m_chk.get("pubkey") or "").lower() != str(pair_address).lower():
+                    continue
+                _lp_chk = _m_chk.get("lp") or {}
+                _b_u = float(_lp_chk.get("baseUSD") or 0.0)
+                _q_u = float(_lp_chk.get("quoteUSD") or 0.0)
+                _p_u = _b_u + _q_u
+                _lk_raw = _lp_chk.get("lpLockedPct")
+                if _lk_raw is None or _p_u < max(25_000.0, mc * 0.08):
+                    break
+                _lk_pct = float(_lk_raw)
+                if 0.0 < _lk_pct <= 1.0 and float(_lp_chk.get("lpLockedUSD") or 0.0) > _p_u * 0.5:
+                    _lk_pct *= 100.0
+                _lk_usd = float(_lp_chk.get("lpLockedUSD") or (_p_u * (_lk_pct / 100.0)))
+                _bm = str(_lp_chk.get("baseMint") or _m_chk.get("mintA") or "")
+                _qm = str(_lp_chk.get("quoteMint") or _m_chk.get("mintB") or "")
+                _hard_u = _b_u if _bm in HARD_QUOTE_MINTS else (_q_u if _qm in HARD_QUOTE_MINTS else (_q_u if (_bm == mint and _qm != mint) else 0.0))
+                if _lk_pct >= 95.0 and _lk_usd >= max(25_000.0, mc * 0.08) and (_hard_u <= 0.0 or (_hard_u / _p_u) >= 0.32):
+                    has_verified_primary_fortress = True
+                break
+
+        raw_rug_score = int(rug_data.get("score", 0))
+        unlocked_secondary_score = 0
+        if has_verified_primary_fortress:
+            for _rk in (rug_data.get("risks") or []):
+                if isinstance(_rk, dict):
+                    _rn = str(_rk.get("name") or "").strip().lower()
+                    if "lp unlocked" in _rn or "unlocked lp" in _rn:
+                        unlocked_secondary_score += int(float(_rk.get("score") or 0))
+        rug_score = max(0, raw_rug_score - unlocked_secondary_score)
         max_rug_score = 220 if mc < 100_000.0 else 300
         if rug_score >= max_rug_score:
             return {
@@ -7557,7 +7783,8 @@ def audit_and_dispatch_candidate(
         for r in (rug_data.get("risks") or []):
             r_name = str(r.get("name", "")).lower()
             r_level = str(r.get("level", "")).lower()
-            if ("danger" in r_level or "high" in r_level) and any(
+            is_secondary_lp_unlock_notice = has_verified_primary_fortress and ("lp unlocked" in r_name or "unlocked lp" in r_name)
+            if not is_secondary_lp_unlock_notice and ("danger" in r_level or "high" in r_level) and any(
                 k in r_name for k in ("liquidity", "creator", "cabal", "cluster", "sybil", "bundled", "dump", "insider")
             ):
                 return {
@@ -7566,7 +7793,7 @@ def audit_and_dispatch_candidate(
                     "verdict": "SKIP",
                     "reason": f"Risiko On-Chain RugCheck: {r.get('name')}"
                 }
-            if mc < 100_000.0 and "warn" in r_level and any(
+            if not is_secondary_lp_unlock_notice and mc < 100_000.0 and "warn" in r_level and any(
                 k in r_name for k in ("ownership", "holder", "liquidity", "creator", "insider", "bundled", "mutable")
             ):
                 sub100k_warns.append(str(r.get("name") or "Risk"))
@@ -8223,28 +8450,37 @@ def _select_dual_track_candidate(
 
 def _effective_pair_rank_key(pair: dict) -> float:
     """
-    MODUS #38A (V4.1 — Anti One-Sided DLMM Liquidity Hijack, Kasus Nyata $STONKLANA GF74fB...Nyk6):
-    Cegah pool sekunder Meteora DLMM satu-sisi ($149.7K token base + hanya $7.1K SOL = $153.8K LP semu, Vol mati $715/j)
-    membajak posisi `best_pair` dari pool utama Raydium CPMM yang seimbang ($61K LP 50/50 100% Lock, Vol $1.17M)!
+    MODUS #38A + #56A (V7.6 — Anti One-Sided / Passive Secondary DLMM Hijack, Kasus $STONKLANA & $MAMESUKE):
+    Cegah pool sekunder Meteora DLMM pasif / tak terkunci ($386K LP nominal: $306K base + $80K SOL, Vol rendah)
+    membajak posisi `best_pair` dari pool utama graduasi Raydium CPMM / PumpSwap yang 100% Locked & mendominasi volume!
     """
     liq_d = pair.get("liquidity") or {}
     raw_liq = float(liq_d.get("usd") or 0.0)
     if raw_liq <= 0.0:
         return 0.0
     eff_liq = raw_liq
+    dex_id = str(pair.get("dexId") or "").strip().lower()
+    is_clmm_dlmm = any(k in dex_id for k in ("meteora", "dlmm", "clmm", "orca", "whirlpool"))
     p_usd = float(pair.get("priceUsd") or 0.0)
     base_amt = float(liq_d.get("base") or 0.0)
     if p_usd > 0.0 and base_amt > 0.0:
         base_val_usd = base_amt * p_usd
         if 0.0 < base_val_usd <= (raw_liq * 1.05):
             quote_val_usd = max(0.0, raw_liq - base_val_usd)
-            if quote_val_usd < (raw_liq * 0.28):
-                eff_liq = max(quote_val_usd * 2.2, raw_liq * 0.10)
+            imbalance_floor = 0.38 if is_clmm_dlmm else 0.28
+            if quote_val_usd < (raw_liq * imbalance_floor):
+                eff_liq = max(quote_val_usd * (1.85 if is_clmm_dlmm else 2.20), raw_liq * 0.10)
     vol_d = pair.get("volume") or {}
     vol_h1 = float(vol_d.get("h1") or 0.0)
     vol_m5 = float(vol_d.get("m5") or 0.0)
-    activity_bonus = min(eff_liq * 0.65, (vol_h1 * 0.25) + (vol_m5 * 0.80))
-    return eff_liq + activity_bonus
+    if is_clmm_dlmm and vol_h1 < (raw_liq * 0.45) and vol_m5 < (raw_liq * 0.06):
+        eff_liq *= 0.48
+    jup_i = pair.get("jup_intel") if isinstance(pair.get("jup_intel"), dict) else {}
+    canonical_bonus = (eff_liq * 0.55) if (eff_liq >= 20_000.0 and jup_i.get("pool_id") and str(pair.get("pairAddress") or "") == str(jup_i.get("pool_id"))) else 0.0
+    is_core_amm = dex_id in {"raydium", "pumpswap", "pancakeswap", "uniswap"}
+    cap_mult = 2.20 if (is_core_amm and eff_liq >= 20_000.0 and vol_h1 >= eff_liq * 1.25) else 0.65
+    activity_bonus = min(eff_liq * cap_mult, (vol_h1 * 0.35) + (vol_m5 * 0.90))
+    return eff_liq + activity_bonus + canonical_bonus
 
 
 def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
@@ -8294,6 +8530,8 @@ def evaluate_single_mint(mint: str, config, boost_amount: int = 0) -> dict:
     if not valid_pairs:
         return {"mint": q_mint, "token": q_mint[:10], "verdict": "SKIP", "reason": "Chain belum didukung (dukung Solana, BSC, Base, ETH)"}
 
+    if jup_single_intel:
+        valid_pairs = [_synthesize_or_enrich_pair_with_jup_intel(vp, jup_single_intel) for vp in valid_pairs]
     pairs = sorted(
         valid_pairs,
         key=_effective_pair_rank_key,
@@ -8519,11 +8757,23 @@ def run_live_market_scan(engine, config) -> dict:
         mc_v = float(intel.get("mc") or 0.0)
         liq_v = float(intel.get("liq") or 0.0)
         bot_ok = float(intel.get("bot_holders_pct") or 0.0) < 28.0 or _is_verified_organic_terminal_crowd(intel)
+        max_jup_dev_intake = (
+            3.80
+            if (
+                mc_v >= 1_060_000.0
+                and liq_v >= 85_000.0
+                and int(intel.get("holder_count") or 0) >= 2_500
+                and float(intel.get("organic_score") or 0.0) >= 70.0
+                and float(intel.get("bot_holders_pct") or 0.0) < 12.0
+                and float(intel.get("sniper_pct") or 0.0) < 6.0
+            )
+            else 2.50
+        )
         if (
             24_000.0 <= mc_v <= 8_800_000.0
             and liq_v >= min_liq_floor
             and int(intel.get("holder_count") or 0) >= 55
-            and float(intel.get("dev_bal_pct") or 0.0) <= 2.5
+            and float(intel.get("dev_bal_pct") or 0.0) <= max_jup_dev_intake
             and bot_ok
             and float(intel.get("sniper_pct") or 0.0) < 20.0
             and int(intel.get("buys_m5") or 0) > int(intel.get("sells_m5") or 0)
