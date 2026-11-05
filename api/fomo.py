@@ -1024,7 +1024,8 @@ def _evaluate_crypto_police_early_hot_runner(
     b_m5 = int(tx_m5_d.get("buys") or 0)
     s_m5 = int(tx_m5_d.get("sells") or 0)
     bs_m5_p = b_m5 / float(max(1, s_m5))
-    early_min_m5 = 4.0 if mc >= 500_000.0 else (4.5 if mc >= 178_000.0 else 8.5)
+    is_police_h1_bull_flag_pre = bool(mc >= 140_000.0 and p_h1 >= 35.0 and liq >= 30_000.0 and bs_m5_p >= 1.28)
+    early_min_m5 = 2.5 if is_police_h1_bull_flag_pre else (4.0 if mc >= 500_000.0 else (4.5 if mc >= 178_000.0 else 8.5))
     early_min_h1 = 12.0 if mc >= 500_000.0 else (18.0 if mc >= 178_000.0 else 20.0)
     # V7.7 MODUS #57B: Izinkan Wave-2 Sniper-Flush V-Reclaim pasca-graduasi (mis. $XDG 14:05 WIB: H1 -12% pasca kuras sniper $154K->$67K->$119K, M5 +39.8%, LP >16% MC)
     is_police_wave2_v_reclaim = bool(
@@ -1082,7 +1083,10 @@ def _evaluate_crypto_police_early_hot_runner(
         and (b_m5 + s_m5) >= 35
         and bs_m5_p >= 1.38
         and org_sc >= 64.0
-        and bot_pct < 20.0
+        and (
+            bot_pct < 20.0
+            or (bot_pct < 28.0 and j_holders >= 500 and dev_bal <= 0.15 and float(ji.get("sniper_pct") or 0.0) < 4.0)
+        )
         and (clicks_per_buyer <= 0.0 or clicks_per_buyer <= 3.2)
     ):
         _b_sh = min(0.68, b_m5 / float(b_m5 + s_m5))
@@ -1090,11 +1094,11 @@ def _evaluate_crypto_police_early_hot_runner(
         s_usd_5m = round(vol_m5 * (1.0 - _b_sh), 2)
 
     is_bull_flag_coil_t1 = bool(
-        age_mins <= 65.0
-        and mc >= 178_000.0
-        and vol_h1 >= max(100_000.0, mc * 0.45)
-        and vol_m5 >= max(9_500.0, mc * 0.042)
-        and org_sc >= 65.0
+        age_mins <= 1440.0
+        and mc >= 140_000.0
+        and vol_h1 >= max(100_000.0, mc * 0.42)
+        and vol_m5 >= max(9_500.0, mc * 0.038)
+        and org_sc >= 64.0
         and j_holders >= 400
         and b_usd_5m >= max(5_500.0, s_usd_5m * 1.18)
     )
@@ -1114,9 +1118,9 @@ def _evaluate_crypto_police_early_hot_runner(
         badges.append(f"TRACK 1: Modal Besar Dev Terkunci ({cap_proofs[0]})")
 
     # -------------------------------------------------------------------------
-    # TRACK 2: ESTAFET CTO KOMUNITAS AMAN (CROSS-MC POST-DEV DUMP RELAY IGNITION - MODUS #55 + #56 + #57B)
+    # TRACK 2: ESTAFET CTO KOMUNITAS AMAN (CROSS-MC POST-DEV DUMP RELAY IGNITION - MODUS #55 + #56 + #57B + #59D)
     # Koin yang sudah DITINGGAL DEVELOPER 100% (dev balance <= 0.20% di MC rendah / <=0.50% di MC tinggi / <=3.8% Cult >10h),
-    # TETAPI diambil alih oleh massa komunitas organik murni (seperti $PEACE, $WASTED, $MAMESUKE, $GATO, $XDG).
+    # TETAPI diambil alih oleh massa komunitas organik murni (seperti $PEACE, $WASTED, $MAMESUKE, $GATO, $XDG, $Impeach).
     # LINTAS-MC: Berlaku dari MC Rendah ($32K) hingga Cult Mega-Runner ($1.2M - $8.8M -> $30M+)!
     # -------------------------------------------------------------------------
     is_cult_1m_seasoned = bool(mc >= 1_060_000.0 and age_mins > 14_400.0 and j_holders >= 2_500 and org_sc >= 70.0)
@@ -1129,6 +1133,23 @@ def _evaluate_crypto_police_early_hot_runner(
         and j_holders >= 500
         and liq >= 35_000.0
     )
+    is_verified_terminal_cto_crowd = bool(
+        org_sc >= 64.0
+        and j_holders >= 500
+        and dev_bal <= 0.15
+        and float(ji.get("sniper_pct") or 0.0) < 4.0
+        and float(ji.get("insider_pct") or 0.0) < 3.0
+        and float(ji.get("bundle_hold_pct") or 0.0) < 3.5
+    )
+    is_launchlab_cult_crowd = bool(
+        org_sc >= 72.0
+        and j_holders >= 2000
+        and dev_bal <= 0.01
+        and float(ji.get("bundle_hold_pct") or 0.0) < 1.0
+        and float(ji.get("insider_pct") or 0.0) < 1.5
+    )
+    max_t2_bot_pct = 35.0 if is_launchlab_cult_crowd else (28.0 if is_verified_terminal_cto_crowd else 22.0)
+    max_pure_bot_pct = 35.0 if is_launchlab_cult_crowd else (28.0 if is_verified_terminal_cto_crowd else 24.0)
     min_b_usd_req = (
         max(3_500.0, min(12_000.0, mc * 0.004))
         if is_cult_1m_seasoned
@@ -1145,13 +1166,19 @@ def _evaluate_crypto_police_early_hot_runner(
         ji
         and dev_bal <= req_dev_bal
         and org_sc >= req_org_sc
-        and bot_pct < 22.0
+        and bot_pct < max_t2_bot_pct
         and float(ji.get("sniper_pct") or 0.0) < 9.0
         and float(ji.get("insider_pct") or 0.0) < req_insider_cap
         and float(ji.get("bundle_hold_pct") or 0.0) < 6.5
-        and b_usd_5m >= min_b_usd_req
-        and b_usd_5m >= (s_usd_5m * req_bs_mult)
-        and (p_m5 >= req_min_p_m5 or p_h1 >= req_min_p_h1 or is_police_wave2_v_reclaim)
+        and (
+            b_usd_5m >= min_b_usd_req
+            or (is_bull_flag_coil_t1 and b_usd_5m >= max(6_000.0, mc * 0.032))
+        )
+        and (
+            b_usd_5m >= (s_usd_5m * req_bs_mult)
+            or (is_bull_flag_coil_t1 and b_usd_5m >= (s_usd_5m * 1.20))
+        )
+        and (p_m5 >= req_min_p_m5 or p_h1 >= req_min_p_h1 or is_police_wave2_v_reclaim or is_bull_flag_coil_t1)
         and (clicks_per_buyer <= 0.0 or clicks_per_buyer <= 3.6)
     )
     if is_post_dev_dump_relay:
@@ -1161,7 +1188,7 @@ def _evaluate_crypto_police_early_hot_runner(
     elif (
         ji
         and org_sc >= 64.0
-        and bot_pct < 24.0
+        and bot_pct < max_pure_bot_pct
         and dev_bal <= 0.50
         and float(ji.get("sniper_pct") or 0.0) < 9.0
         and float(ji.get("insider_pct") or 0.0) < 5.5
@@ -2351,6 +2378,24 @@ def evaluate_market_candidate(
         and _j_b5 >= (_j_s5 * 1.28)
         and float(_jup_s1.get("organic_score") or 0.0) >= 60.0
     )
+    # V7.9 MODUS #59C (Verified Corridor Velocity Ignition — Anti-Sandwich Cron 60 Detik, Kasus Nyata $Impeach $144K -> $236K +63.6%):
+    # Membebaskan pelari organik/CTO terverifikasi yang sedang jebol base panjang di Lorong 0-3 dari jebakan sempit >+45%
+    # asalkan masih di <=78% lorong, LP dalam (>=11.5% MC), dev 0-0.5%, sniper/insider bersih, & arus beli USD nyata >=1.28x jual!
+    is_verified_corridor_velocity_ignition = bool(
+        not is_pre_grad_curve
+        and c_cfg["corridor_id"] in (0, 1, 2, 3)
+        and corridor_progress <= 0.78
+        and liq >= max(c_cfg["min_liq"], 28_000.0)
+        and ((liq / max(1.0, mc)) * 100.0) >= 11.5
+        and _jup_s1
+        and float(_jup_s1.get("organic_score") or 0.0) >= 62.0
+        and float(_jup_s1.get("dev_bal_pct") or 0.0) <= 0.50
+        and float(_jup_s1.get("sniper_pct") or 0.0) < 8.0
+        and float(_jup_s1.get("insider_pct") or 0.0) < 5.0
+        and int(_jup_s1.get("holder_count") or 0) >= 350
+        and _j_b5 >= max(11_000.0, mc * 0.048)
+        and _j_b5 >= (_j_s5 * 1.28)
+    )
     _bc_pct_s1 = float(best_pair.get("bonding_curve_pct") or (_jup_s1.get("bonding_curve_pct") if _jup_s1 else 0.0) or 0.0)
     is_elite_pre_grad_sprint_s1 = bool(
         is_pre_grad_curve
@@ -2387,8 +2432,26 @@ def evaluate_market_candidate(
             )
         )
     )
+    is_verified_cto_bull_flag = bool(
+        not is_pre_grad_curve
+        and age_minutes <= 1440.0
+        and c_cfg["corridor_id"] in (1, 2, 3)
+        and liq >= max(c_cfg["min_liq"], 30_000.0)
+        and vol_h1 >= max(110_000.0, mc * 0.42)
+        and vol_m5 >= max(9_500.0, mc * 0.038)
+        and p_h1 >= 35.0
+        and _jup_s1
+        and float(_jup_s1.get("organic_score") or 0.0) >= 62.0
+        and float(_jup_s1.get("dev_bal_pct") or 0.0) <= 0.25
+        and float(_jup_s1.get("sniper_pct") or 0.0) < 8.0
+        and float(_jup_s1.get("insider_pct") or 0.0) < 5.0
+        and int(_jup_s1.get("holder_count") or 0) >= 450
+        and _j_b5 >= max(6_000.0, _j_s5 * 1.20)
+    )
 
-    if is_verified_mature_cult and is_proven_climber:
+    if is_verified_cto_bull_flag:
+        min_p_m5 = 2.5
+    elif is_verified_mature_cult and is_proven_climber:
         min_p_m5 = 3.5
     elif is_proven_climber and is_mega_corridor:
         min_p_m5 = 4.0
@@ -2402,7 +2465,11 @@ def evaluate_market_candidate(
     max_p_m5 = (
         215.0
         if is_elite_pre_grad_sprint_s1
-        else (115.0 if is_early_police_velocity_breakout else (68.0 if is_hyper_wave1_ignition else 45.0))
+        else (
+            115.0
+            if is_early_police_velocity_breakout
+            else (88.0 if is_verified_corridor_velocity_ignition else (68.0 if is_hyper_wave1_ignition else 45.0))
+        )
     )
     if p_m5 < min_p_m5:
         return False, f"Momentum 5m belum menginjak gas ({p_m5:+.1f}% < +{min_p_m5:.1f}%) - Tunggu dorongan naik", {}
@@ -2534,16 +2601,24 @@ def evaluate_market_candidate(
         or is_sub100k_propulsion_flow
         or is_base_awakening_ignition
         or is_post_graduation_bull_flag
+        or is_verified_cto_bull_flag
+        or is_verified_corridor_velocity_ignition
         or bool(c_cfg.get("wall_absorption_breakout"))
     )
-    min_bs_m5 = (1.30 if is_mega_corridor else (1.28 if (is_sub100k_propulsion_flow or is_post_graduation_bull_flag) else 1.35)) if high_tx_organic_flow else 1.85
-    min_cvd = (13.0 if is_mega_corridor else (12.0 if (is_sub100k_propulsion_flow or is_post_graduation_bull_flag) else 15.0)) if high_tx_organic_flow else 29.8
-    h1_decay_floor = (0.80 if is_mega_corridor else 0.82) if high_tx_organic_flow else 0.90
+    _is_bull_or_vel_flow = bool(is_sub100k_propulsion_flow or is_post_graduation_bull_flag or is_verified_cto_bull_flag or is_verified_corridor_velocity_ignition)
+    min_bs_m5 = (1.30 if is_mega_corridor else (1.28 if _is_bull_or_vel_flow else 1.35)) if high_tx_organic_flow else 1.85
+    min_cvd = (13.0 if is_mega_corridor else (12.0 if _is_bull_or_vel_flow else 15.0)) if high_tx_organic_flow else 29.8
+    h1_decay_floor = (
+        0.70
+        if (is_post_graduation_bull_flag or is_verified_cto_bull_flag)
+        else ((0.80 if is_mega_corridor else 0.82) if high_tx_organic_flow else 0.90)
+    )
 
     if buy_sell_ratio_m5 < min_bs_m5:
         return False, f"Rasio Buy/Sell kurang dominan ({buy_sell_ratio_m5:.2f}x < {min_bs_m5:.2f}x)", {}
 
-    if age_minutes >= 20.0 and buy_sell_ratio_m5 < (buy_sell_ratio_h1 * h1_decay_floor):
+    eff_bs_h1_ref = min(buy_sell_ratio_h1, 2.05) if (high_tx_organic_flow and buy_sell_ratio_m5 >= 1.35) else buy_sell_ratio_h1
+    if age_minutes >= 20.0 and buy_sell_ratio_m5 < (eff_bs_h1_ref * h1_decay_floor):
         return False, f"Momentum beli melambat (Rasio M5 {buy_sell_ratio_m5:.2f}x < H1 {buy_sell_ratio_h1:.2f}x)", {}
 
     cvd_ratio = round(((buys_m5 - sells_m5) / max(1, total_m5)) * 100.0, 1)
@@ -2629,7 +2704,9 @@ def evaluate_market_candidate(
     vol_rate_m5 = vol_m5 / 5.0
     vol_rate_h1 = vol_h1 / effective_h1_mins
     accel_ratio = vol_rate_m5 / max(1.0, vol_rate_h1)
-    if is_post_graduation_bull_flag and p_m5 >= 4.5 and buy_sell_ratio_m5 >= 1.28:
+    if (is_post_graduation_bull_flag and p_m5 >= 4.5 and buy_sell_ratio_m5 >= 1.28) or (
+        is_verified_cto_bull_flag and p_m5 >= 2.5 and buy_sell_ratio_m5 >= 1.28
+    ):
         min_accel = 0.28
     elif is_verified_mature_cult and p_m5 >= 3.5 and buy_sell_ratio_m5 >= 1.30:
         min_accel = 0.72
@@ -4036,6 +4113,102 @@ def evaluate_mm_staircase_micro_candidate(
     }
 
 
+def _bound_amm_vault_insider_network_pct(
+    rug_data: dict,
+    pure_holdings: list[dict],
+    supply_raw: float,
+    holders_total_entries: int = 0,
+    insider_count: int = 0,
+    jup_intel: dict | None = None,
+) -> tuple[float, float, list[tuple[int, float]]]:
+    """
+    V7.9 MODUS #59A (Universal AMM-Vault Pigeonhole Bound vs Ghost Transfer Graph — Kasus Nyata $Impeach & $MAMESUKE):
+    Pada koin graduasi PumpSwap / Raydium / Meteora DLMM multi-pool, RugCheck `insiderNetworks` sering membekukan transfer
+    awal seeding kolam / migrasi kurva bonding (`tokenAmount == currentHolding`, mis. $Impeach `radiant-red-cat`: `size=7`,
+    `41.8%` suplai), padahal Top-25 holder di blockchain membuktikan `insider_count == 0`, `max_single_pure = 2.83%`,
+    dan Top-7 dompet EOA murni di seluruh rantai hanya memegang `17.31%`!
+    - Hukum Kekekalan Suplai (Pigeonhole Principle): `k` dompet EOA di luar pool MUSTAHIL memegang melebihi jumlah `k`
+      dompet non-pool terbesar (`pigeonhole_eoa_cap`), terlepas dari berapa persen sisa cadangan token kolam saat harga naik!
+    - Jika `raw_net_hold_pct > pigeonhole_eoa_cap * 1.35` dan tidak ada risiko bahaya insider di RugCheck:
+      1) Bila nilai transfer membeku identik (`abs(tokenAmount - currentHolding) <= 1.0`), `raw_net_hold_pct > pigeonhole_eoa_cap * 1.65`,
+         terdapat >=2 akun AMM/Pool resmi di `knownAccounts`/`markets`, dan `jup_intel.insider_pct < 3.5%`, maka klaster tersebut
+         terbukti 100% graf vault migrasi AMM (`0.0%` EOA insider).
+      2) Selain itu, pangkas secara matematis ke batas atas fisika EOA `round(pigeonhole_eoa_cap, 2)`.
+    - Klaster Sybil EOA asli tetap tercermin utuh di `pure_holdings` sehingga tidak mendapat diskon sepeser pun!
+    """
+    if supply_raw <= 0.0 or not isinstance(rug_data, dict):
+        return 0.0, 0.0, []
+
+    max_single_pure = float(pure_holdings[0]["pct"]) if pure_holdings else 0.0
+    top10_pure_pct = sum(float(x["pct"]) for x in pure_holdings[:10])
+    has_danger_insider_risk = any(
+        isinstance(r, dict)
+        and str(r.get("level") or "").lower() in ("danger", "high")
+        and any(k in str(r.get("name") or "").lower() for k in ("insider", "cabal", "sybil"))
+        for r in (rug_data.get("risks") or [])
+    )
+    can_bound = bool(
+        holders_total_entries >= 18
+        and len(pure_holdings) >= 8
+        and insider_count == 0
+        and max_single_pure <= 4.5
+        and top10_pure_pct <= 24.5
+        and not has_danger_insider_risk
+    )
+    known_accs = rug_data.get("knownAccounts") if isinstance(rug_data.get("knownAccounts"), dict) else {}
+    amm_known_cnt = sum(
+        1
+        for acc_meta in known_accs.values()
+        if isinstance(acc_meta, dict)
+        and any(
+            kw in str(acc_meta.get("type") or acc_meta.get("name") or "").lower()
+            for kw in ("amm", "pool", "vault", "raydium", "meteora", "pump", "orca", "whirlpool", "dlmm")
+        )
+    )
+    has_multi_amm_infra = amm_known_cnt >= 2 or len(rug_data.get("markets") or []) >= 2
+    jup_insider_clean = (
+        not isinstance(jup_intel, dict)
+        or not jup_intel
+        or float(jup_intel.get("insider_pct") or 0.0) < 3.5
+    )
+
+    total_pct = 0.0
+    max_cluster_pct = 0.0
+    clusters: list[tuple[int, float]] = []
+    for net in (rug_data.get("insiderNetworks") or []):
+        if not isinstance(net, dict):
+            continue
+        net_size = int(net.get("activeAccounts") or net.get("size") or 0)
+        cur_hold_raw = float(net.get("currentHolding") or 0.0)
+        tok_amt_raw = float(net.get("tokenAmount") or 0.0)
+        eff_raw = cur_hold_raw if cur_hold_raw > 0.0 else tok_amt_raw
+        if eff_raw <= 0.0:
+            continue
+        raw_pct = (eff_raw / supply_raw) * 100.0
+        eff_pct = raw_pct
+        if can_bound and 2 <= net_size <= 25:
+            k_slice = min(net_size, len(pure_holdings))
+            tail_pct = float(pure_holdings[-1]["pct"]) if pure_holdings else 0.5
+            pigeonhole_eoa_cap = sum(float(x["pct"]) for x in pure_holdings[:k_slice]) + max(0, net_size - k_slice) * tail_pct
+            if raw_pct > (pigeonhole_eoa_cap * 1.35):
+                is_frozen_amm_migration_graph = bool(
+                    tok_amt_raw > 0.0
+                    and cur_hold_raw > 0.0
+                    and abs(tok_amt_raw - cur_hold_raw) <= 1.0
+                    and raw_pct > (pigeonhole_eoa_cap * 1.65)
+                    and has_multi_amm_infra
+                    and jup_insider_clean
+                )
+                eff_pct = 0.0 if is_frozen_amm_migration_graph else round(pigeonhole_eoa_cap, 2)
+        total_pct += eff_pct
+        if eff_pct > max_cluster_pct:
+            max_cluster_pct = eff_pct
+        if net_size >= 2 and eff_pct > 0.0:
+            clusters.append((net_size, eff_pct))
+
+    return round(total_pct, 2), round(max_cluster_pct, 2), clusters
+
+
 def verify_mm_staircase_micro_stage2(
     mint: str,
     best_pair: dict,
@@ -4232,7 +4405,10 @@ def verify_mm_staircase_micro_stage2(
     pure_holdings.sort(key=lambda x: x["pct"], reverse=True)
     max_single_pure = pure_holdings[0]["pct"] if pure_holdings else 0.0
     top10_pure_pct = sum(x["pct"] for x in pure_holdings[:10])
-    total_holders = int(rug_data.get("totalHolders") or 0)
+    _mm_jup_ref = fresh_jup_intel if isinstance(fresh_jup_intel, dict) and fresh_jup_intel else (
+        best_pair.get("jup_intel") if isinstance(best_pair.get("jup_intel"), dict) else None
+    )
+    total_holders = int(rug_data.get("totalHolders") or ((_mm_jup_ref or {}).get("holder_count")) or 0)
 
     if max_single_pure > 4.0:
         return False, f"1 dompet luar pool memegang terlalu besar ({max_single_pure:.2f}% > 4.0%) -> Rawan sekali banting!", {}
@@ -4241,16 +4417,15 @@ def verify_mm_staircase_micro_stage2(
     if 0 < total_holders < 120:
         return False, f"Jumlah pemegang terlalu sedikit ({total_holders} < 120 holders)", {}
 
-    total_insider_net_pct = 0.0
-    max_single_insider_cluster_pct = 0.0
-    if supply_raw > 0.0:
-        for net in (rug_data.get("insiderNetworks") or []):
-            if isinstance(net, dict):
-                raw_net_amt = float(net.get("currentHolding") or net.get("tokenAmount") or 0.0)
-                c_pct = (raw_net_amt / supply_raw) * 100.0
-                total_insider_net_pct += c_pct
-                if c_pct > max_single_insider_cluster_pct:
-                    max_single_insider_cluster_pct = c_pct
+    mm_insider_cnt = sum(1 for h in holders[:25] if isinstance(h, dict) and bool(h.get("insider")))
+    total_insider_net_pct, max_single_insider_cluster_pct, _ = _bound_amm_vault_insider_network_pct(
+        rug_data=rug_data,
+        pure_holdings=pure_holdings,
+        supply_raw=supply_raw,
+        holders_total_entries=len(holders),
+        insider_count=mm_insider_cnt,
+        jup_intel=_mm_jup_ref,
+    )
     if total_insider_net_pct > 12.0 or (hard_sol_secondary_pools == 0 and max_single_insider_cluster_pct >= 7.5):
         return (
             False,
@@ -5107,7 +5282,8 @@ def analyze_holders_and_lp_lock(
     pool_total_pct = sum(x["pct"] for x in pool_holdings)
     outside_pool_pct = max(0.0, 100.0 - pool_total_pct)
     insider_count = sum(1 for x in pure_holdings[:15] if x.get("insider"))
-    total_holders = int(rug_data.get("totalHolders") or 0)
+    _std_jup_ref = best_pair.get("jup_intel") if isinstance(best_pair, dict) and isinstance(best_pair.get("jup_intel"), dict) else None
+    total_holders = int(rug_data.get("totalHolders") or ((_std_jup_ref or {}).get("holder_count")) or 0)
 
     # V3.8 (Modus #35 — Kasus Nyata $Grokbot 6NaM98...pump): Hitung SPL Supply Burn pada koin 1B standar Solana!
     supply_ui = (supply_raw / float(10 ** decimals)) if supply_raw > 0.0 else 0.0
@@ -5115,15 +5291,39 @@ def analyze_holders_and_lp_lock(
     if 400_000_000.0 <= supply_ui < 999_000_000.0 and (str(token_mint or "").endswith("pump") or decimals == 6):
         spl_burned_pct = round(((1_000_000_000.0 - supply_ui) / 1_000_000_000.0) * 100.0, 2)
 
-    # Deteksi Pengambilalihan Komunitas Murni / Sovereign Post-Dev-Exit Token (V7.0):
-    # Ketika Dev sudah 99.85%+ keluar (<=0.15%), LP Lock >=98%, tanpa jaringan insider bermakna (<1.0% suplai),
-    # batas Top-10 mengikuti kurva deplesi AMM (`outside_pool_pct * 0.29` s/d 25.0%) baik pada CTO besar (>=1000 holders)
-    # maupun pada koin matang pasca-flush (>=180m & >=350 holders murni), tanpa melonggarkan koin muda <180m (<450 holders)!
-    effective_insider_net_pct = 0.0
-    if supply_raw > 0.0:
-        for _net_i in (rug_data.get("insiderNetworks") or []):
-            if isinstance(_net_i, dict):
-                effective_insider_net_pct += (float(_net_i.get("currentHolding") or 0.0) / supply_raw) * 100.0
+    # Deteksi Pengambilalihan Komunitas Murni / Sovereign Post-Dev-Exit Token (V7.0 + V7.9 MODUS #59A):
+    effective_insider_net_pct, _, _pre_bounded_clusters = _bound_amm_vault_insider_network_pct(
+        rug_data=rug_data,
+        pure_holdings=pure_holdings,
+        supply_raw=supply_raw,
+        holders_total_entries=len(holders),
+        insider_count=insider_count,
+        jup_intel=_std_jup_ref,
+    )
+
+    # MODUS #60 (V8.0 — VERIFIKASI ALOKASI PROTOKOL RESMI RAYDIUM LAUNCHLAB 5.0% vs PAUS DUMP LIAR):
+    # Mengenali alokasi resmi pencipta 5.000% (50.000.000 token dari 1 Miliar suplai) yang dicetak otomatis oleh program
+    # Raydium LaunchLab / Stonk.fun saat migrasi pool Raydium CPMM 100% Locked, HANYA JIKA:
+    #   (1) Launchpad resmi launchlab / stonkfun / raydium-launchlab,
+    #   (2) Akun pemegang terbesar <= 5.05% (50M token) & tidak ada pemegang kedua > 4.2%,
+    #   (3) Akun terverifikasi 0 transaksi keluar (pasif tanpa banting),
+    #   (4) Jumlah pemegang masif >= 1.500 holders & Organic Score >= 68.0,
+    #   (5) LP Pool Utama terbukti >= 95% Locked & cadangan Hard Quote >= $25.000!
+    # Koin scam kurva liar / paus bundle 5%+ TETAP 100% DIBLOKIR MUTLAK!
+    _lp_tag_lower = str((_std_jup_ref or {}).get("launchpad") or (best_pair or {}).get("launchpad") or "").lower()
+    _is_trusted_launchlab_prog = any(lp_k in _lp_tag_lower for lp_k in ("launchlab", "raydium-launchlab", "stonkfun", "stonk.fun"))
+    _is_exact_5pct_protocol_reserve = bool(
+        _is_trusted_launchlab_prog
+        and 4.90 <= max_single_pure <= 5.05
+        and (len(pure_holdings) < 2 or pure_holdings[1]["pct"] <= 4.20)
+        and (total_holders >= 1500 or (isinstance(_std_jup_ref, dict) and int(_std_jup_ref.get("holder_count") or 0) >= 1500))
+        and (isinstance(_std_jup_ref, dict) and float(_std_jup_ref.get("organic_score") or 0.0) >= 68.0)
+        and primary_lp_locked_pct >= 95.0
+        and primary_locked_usd >= 25_000.0
+        and insider_count == 0
+    )
+    effective_max_single_pure = 5.05 if _is_exact_5pct_protocol_reserve else 4.60
+
     has_zero_insider_footprint = (
         insider_count == 0
         and int(rug_data.get("graphInsidersDetected") or 0) == 0
@@ -5132,14 +5332,14 @@ def analyze_holders_and_lp_lock(
     is_wide_fortress_zero_insider = bool(
         has_zero_insider_footprint
         and creator_pct <= 0.15
-        and max_single_pure <= 3.85
+        and max_single_pure <= (5.05 if _is_exact_5pct_protocol_reserve else 3.85)
         and outside_pool_pct >= 80.0
         and total_holders >= 1_000
         and primary_lp_locked_pct >= 98.0
         and primary_locked_usd >= 35_000.0
     )
     cto_top10_cap = (
-        min(27.5 if is_wide_fortress_zero_insider else 25.0, round(outside_pool_pct * (0.32 if is_wide_fortress_zero_insider else 0.29), 1))
+        min(27.5 if (is_wide_fortress_zero_insider or _is_exact_5pct_protocol_reserve) else 25.0, round(outside_pool_pct * (0.32 if (is_wide_fortress_zero_insider or _is_exact_5pct_protocol_reserve) else 0.29), 1))
         if (
             outside_pool_pct >= 80.0
             and insider_count == 0
@@ -5153,7 +5353,7 @@ def analyze_holders_and_lp_lock(
     is_verified_cto_takeover = bool(
         creator_pct <= 0.15
         and primary_lp_locked_pct >= 98.0
-        and max_single_pure <= 3.85
+        and max_single_pure <= (5.05 if _is_exact_5pct_protocol_reserve else 3.85)
         and top10_pure_pct <= cto_top10_cap
         and (
             (mc_usd >= 100_000.0 and total_holders >= 400)
@@ -5203,59 +5403,37 @@ def analyze_holders_and_lp_lock(
                 {}
             )
 
-    # V3.0 + V3.2 (#17) + V3.3/V3.4 (#28) + V7.6 MODUS #56A (Pigeonhole Supply Conservation vs Vault-Inflated `insiderNetworks`):
-    # Pada koin multi-pool resmi (seperti $MAMESUKE di Stonk.fun/Raydium CPMM + Meteora DLMM), RugCheck `insiderNetworks`
-    # kerap menghitung token yang dialirkan ke vault kolam (`size=4, currentHolding=53%` karena 36.5% berada di vault DLMM/CPMM),
-    # padahal Top-25 holder penuh membuktikan `max_single_pure = 4.09%` dan `top10_pure = 13.4%` (`4` EOA mustahil memegang > `sum(top 4)`!).
-    can_bound_vault_transfer_graph = bool(
-        len(holders) >= 20
-        and len(pure_holdings) >= 10
-        and pool_total_pct >= 15.0
-        and insider_count == 0
-        and max_single_pure <= 4.5
-        and top10_pure_pct <= 19.5
-    )
+    # V3.0 + V3.2 (#17) + V3.3/V3.4 (#28) + V7.6 MODUS #56A + V7.9 MODUS #59A (Universal AMM-Vault Pigeonhole Bound):
     if supply_raw > 0.0 and mc_usd < 1_080_000.0 and (total_holders == 0 or total_holders < 3500):
-        total_insider_net_pct = 0.0
-        for net in (rug_data.get("insiderNetworks") or []):
-            if isinstance(net, dict):
-                net_size = int(net.get("activeAccounts") or net.get("size") or 0)
-                if net_size >= 2:
-                    raw_net_hold_pct = (float(net.get("currentHolding") or 0.0) / supply_raw) * 100.0
-                    net_hold_pct = raw_net_hold_pct
-                    if can_bound_vault_transfer_graph and net_size <= 25:
-                        k_slice = min(net_size, len(pure_holdings))
-                        tail_pct = float(pure_holdings[-1]["pct"]) if pure_holdings else 0.5
-                        pigeonhole_eoa_cap = sum(float(x["pct"]) for x in pure_holdings[:k_slice]) + max(0, net_size - k_slice) * tail_pct
-                        if raw_net_hold_pct > (pigeonhole_eoa_cap * 1.35):
-                            net_hold_pct = round(pigeonhole_eoa_cap, 2)
-                    total_insider_net_pct += net_hold_pct
-                    if mc_usd < 525_000.0 and (total_holders == 0 or total_holders < 2500):
-                        if 2 <= net_size <= 12 and net_hold_pct >= 12.5:
-                            return (
-                                False,
-                                f"Terdeteksi Bom Klaster Transfer Insider: {net_size} dompet terhubung memegang "
-                                f"{net_hold_pct:.1f}% suplai pada koin muda!",
-                                {}
-                            )
-                    if net_hold_pct >= 14.0:
-                        return (
-                            False,
-                            f"Terdeteksi Jaring Laba-Laba Transfer Sybil: {net_size} dompet terhubung menguasai "
-                            f"{net_hold_pct:.1f}% suplai (>= 14.0%) -> Permainan mulus bandar sebar puluhan dompet!",
-                            {}
-                        )
-                    if net_size >= 30 and (
-                        net_hold_pct >= 5.5
-                        or total_holders == 0
-                        or (net_size / float(max(1, total_holders))) >= 0.12
-                    ):
-                        return (
-                            False,
-                            f"Terdeteksi Kawanan Botnet Transfer Massal: {net_size} dompet terhubung dalam 1 klaster "
-                            f"(menguasai {net_hold_pct:.1f}% suplai) -> Manipulasi botnet cuci volume & kuras kolam!",
-                            {}
-                        )
+        total_insider_net_pct = effective_insider_net_pct
+        bounded_clusters = _pre_bounded_clusters
+        for net_size, net_hold_pct in bounded_clusters:
+            if mc_usd < 525_000.0 and (total_holders == 0 or total_holders < 2500):
+                if 2 <= net_size <= 12 and net_hold_pct >= 12.5:
+                    return (
+                        False,
+                        f"Terdeteksi Bom Klaster Transfer Insider: {net_size} dompet terhubung memegang "
+                        f"{net_hold_pct:.1f}% suplai pada koin muda!",
+                        {}
+                    )
+            if net_hold_pct >= 14.0:
+                return (
+                    False,
+                    f"Terdeteksi Jaring Laba-Laba Transfer Sybil: {net_size} dompet terhubung menguasai "
+                    f"{net_hold_pct:.1f}% suplai (>= 14.0%) -> Permainan mulus bandar sebar puluhan dompet!",
+                    {}
+                )
+            if net_size >= 30 and (
+                net_hold_pct >= 5.5
+                or total_holders == 0
+                or (net_size / float(max(1, total_holders))) >= 0.12
+            ):
+                return (
+                    False,
+                    f"Terdeteksi Kawanan Botnet Transfer Massal: {net_size} dompet terhubung dalam 1 klaster "
+                    f"(menguasai {net_hold_pct:.1f}% suplai) -> Manipulasi botnet cuci volume & kuras kolam!",
+                    {}
+                )
         if 25_000.0 <= mc_usd < 100_000.0 and total_insider_net_pct >= 13.0:
             return (
                 False,
@@ -5274,8 +5452,9 @@ def analyze_holders_and_lp_lock(
     if insider_count >= 2:
         return False, f"Terdeteksi {insider_count} dompet Insider/Bundler aktif di Top 15", {}
 
-    if max_single_pure > 4.6:
-        return False, f"Paus Tunggal Bahaya: 1 pure holder menguasai {max_single_pure:.1f}% (> 4.6%)", {}
+    # MODUS #60 (V8.0): Alokasi resmi pencipta 5.000% (50M token) dari program Raydium LaunchLab / Stonk.fun
+    if max_single_pure > effective_max_single_pure:
+        return False, f"Paus Tunggal Bahaya: 1 pure holder menguasai {max_single_pure:.1f}% (> {effective_max_single_pure:.1f}%)", {}
 
     # PERISAI V3.2 (#18): Top-5 Exit-Drain / Pool-Insolvency Trap di <$100k
     if 25_000.0 <= mc_usd < 100_000.0 and primary_hard_usd > 0.0 and pure_holdings:
@@ -5325,15 +5504,16 @@ def analyze_holders_and_lp_lock(
             )
 
     # LAYER 3E (V6.0 — Kurva Kontinu Pareto Depletion vs Tebing Kaku):
-    # Pada koin bersih tanpa insider (insider_count == 0, dev <= 1.0%, max_single <= 4.5%), batas Top-10 Pure
+    # Pada koin bersih tanpa insider (insider_count == 0, dev <= 1.0%, max_single <= 4.5% / 5.05% LaunchLab protocol reserve), batas Top-10 Pure
     # bergerak mulus secara matematis mengikuti pengurasan pool (`outside_pool_pct` 65%->95%) & lebar komunitas
     # (`total_holders` 450->2.000+), sementara koin sempit/ber-insider tetap dikunci ketat di 19.5%!
-    if insider_count == 0 and (creator_pct <= 1.0 or is_seasoned_cult_diamond_dev) and max_single_pure <= 4.5 and outside_pool_pct >= 72.0 and total_holders >= 450:
+    max_single_allowed_pareto = 5.05 if _is_exact_5pct_protocol_reserve else 4.50
+    if insider_count == 0 and (creator_pct <= 1.0 or is_seasoned_cult_diamond_dev) and max_single_pure <= max_single_allowed_pareto and outside_pool_pct >= 72.0 and total_holders >= 450:
         _dep_f = min(1.0, max(0.0, (outside_pool_pct - 65.0) / 25.0))
         _brd_f = min(1.0, max(0.0, (float(total_holders) - 350.0) / 850.0))
         _smooth_cap = 19.5 + (5.5 * _dep_f * _brd_f)
-        _pareto_mult = 0.32 if is_wide_fortress_zero_insider else 0.29
-        _pareto_ceil = 27.5 if is_wide_fortress_zero_insider else 25.0
+        _pareto_mult = 0.32 if (is_wide_fortress_zero_insider or _is_exact_5pct_protocol_reserve) else 0.29
+        _pareto_ceil = 27.5 if (is_wide_fortress_zero_insider or _is_exact_5pct_protocol_reserve) else 25.0
         _legacy_cap = (outside_pool_pct * _pareto_mult) if (outside_pool_pct >= 80.0 and total_holders >= 1000) else 19.5
         max_top10_pure = min(_pareto_ceil, round(max(_smooth_cap, _legacy_cap), 1))
     elif is_verified_cto_takeover and age_minutes >= 180.0 and total_holders >= 350:
@@ -7064,12 +7244,20 @@ def evaluate_ohlcv_ath_trap(
         ):
             is_wave2_staircase_reclaim = True
 
-    # 2. PERISAI V2.8B + V3.3 (#26A) + V3.4 God-Candle Consolidation + V4.1 Birth Discovery:
+    # 2. PERISAI V2.8B + V3.3 (#26A) + V3.4 God-Candle Consolidation + V4.1 Birth Discovery + V7.9 MODUS #59B (15m Impulse & Cross-Age Bull-Flag):
     has_birth_discovery_pullback = False
+    is_15m_or_higher_tf = bool(
+        age_minutes > 360.0
+        or (
+            len(valid_candles) >= 2
+            and (float(valid_candles[-1][0] or 0.0) - float(valid_candles[-2][0] or 0.0)) >= 840.0
+        )
+    )
     if age_minutes <= 1440.0 and current_mc_usd < 1_080_000.0:
         recent_two = valid_candles[-2:]
         for idx_r, row in enumerate(recent_two):
             o_v, h_v, c_v = float(row[1] or 0.0), float(row[2] or 0.0), float(row[4] or 0.0)
+            row_vol = float(row[5] or 0.0)
             if o_v > 0.0 and h_v > current_price_usd:
                 candle_pump_pct = ((h_v - o_v) / o_v) * 100.0
                 wick_slam_pct = ((h_v - current_price_usd) / h_v) * 100.0
@@ -7086,16 +7274,12 @@ def evaluate_ohlcv_ath_trap(
                         and current_price_usd >= c_v
                     ):
                         is_confirmed_whale_impulse = True
-                # MODUS #38B + V7.8 #58B (Birth Price-Discovery Pullback vs Bait & Slam, Kasus $STONKLANA & $STONKS):
-                # Pada 1.5-12 menit pertama kelahiran pool DEX, chart Jupiter V2 sering menyertakan >3 bar 5m dari fase kurva bonding
-                # sebelumnya (`len(valid_candles) > 3`). Selama `age_minutes <= 12.0` dan harga sekarang kokoh >=1.80x harga dasar awal
-                # serta bertahan dalam <=33% dari jarum kelulusan dgn Vol >=$18K, itu adalah penemuan harga graduasi yang sehat!
                 first_base_o = float(valid_candles[0][1] or valid_candles[0][4] or o_v)
                 is_healthy_birth_discovery = (
                     1.5 <= age_minutes <= 12.0
                     and (len(valid_candles) <= 3 or (first_base_o > 0.0 and current_price_usd >= (first_base_o * 1.80)))
                     and current_mc_usd <= 260_000.0
-                    and float(row[5] or 0.0) >= 18_000.0
+                    and row_vol >= 18_000.0
                     and (
                         (current_price_usd >= (o_v * 1.16) and c_v >= (o_v * 1.16))
                         or (first_base_o > 0.0 and current_price_usd >= (first_base_o * 2.20) and c_v >= (o_v * 0.94))
@@ -7104,9 +7288,6 @@ def evaluate_ohlcv_ath_trap(
                 )
                 if is_healthy_birth_discovery:
                     has_birth_discovery_pullback = True
-                # MODUS #40 (V5.1 — Organic Multi-Candle Staircase Breakout vs Single-Candle Bait & Slam, Kasus $Foxii $36K->$365K):
-                # Koin yang sedang menanjak sehat >=3 candle (Higher-Lows, >=2 bar hijau, Vol >=$18K, harga masih >=+25% di atas Open
-                # dan koreksi nafas <=22% dari pucuk) adalah ekspansi tangga organik, BUKAN pancingan 1-candle $Shitcoin!
                 is_organic_staircase_breakout = False
                 if len(valid_candles) >= 3:
                     c3_st = valid_candles[-3:]
@@ -7121,28 +7302,46 @@ def evaluate_ohlcv_ath_trap(
                     if (
                         green_cnt_st >= 2
                         and lows_rising_st
-                        and float(row[5] or 0.0) >= 18_000.0
+                        and row_vol >= 18_000.0
                         and current_price_usd >= (o_v * 1.25)
                         and c_v >= (o_v * 1.25)
                         and wick_slam_pct <= 22.0
                     ):
                         is_organic_staircase_breakout = True
-                # V7.6 MODUS #56A (Post-Graduation Bull-Flag Shelf vs Bait & Slam, Kasus $MAMESUKE $200k->$1.59M):
-                # Jika jarum awal pada bar sebelumnya (`idx_r == 0`) diikuti oleh bar konsolidasi hijau/stabil (`nxt_c >= nxt_o * 0.97`)
-                # yang tetap menahan >=68% puncak jarum & >=1.30x di atas Open awal dengan dukungan modal besar dev, itu adalah Bull-Flag!
+                # V7.6 MODUS #56A + V7.9 MODUS #59B (Cross-Age 5m/15m Bull-Flag Shelf vs Bait & Slam — Kasus $MAMESUKE & $Impeach):
+                # Membuka gembok artifisial `age_minutes <= 60.0` dan menerima baik `has_heavy_dev_capital` maupun `is_verified_cto`!
                 is_bull_flag_shelf_hold = False
                 if (
                     len(recent_two) == 2
                     and idx_r == 0
-                    and age_minutes <= 60.0
-                    and has_heavy_dev_capital
-                    and float(row[5] or 0.0) >= 20_000.0
+                    and age_minutes <= 1440.0
+                    and (has_heavy_dev_capital or is_verified_cto)
+                    and row_vol >= 20_000.0
                     and current_price_usd >= (o_v * 1.30)
-                    and current_price_usd >= (h_v * 0.68)
-                    and float(recent_two[1][4] or 0.0) >= (float(recent_two[1][1] or 0.0) * 0.97)
-                    and wick_slam_pct <= 32.0
+                    and current_price_usd >= (h_v * 0.66)
+                    and (
+                        float(recent_two[1][4] or 0.0) >= (float(recent_two[1][1] or 0.0) * 0.96)
+                        or (
+                            float(recent_two[1][5] or 0.0) <= (row_vol * 0.72)
+                            and float(recent_two[1][4] or 0.0) >= (o_v * 1.55)
+                            and current_price_usd >= (float(recent_two[1][4] or 0.0) * 0.96)
+                        )
+                    )
+                    and wick_slam_pct <= 34.0
                 ):
                     is_bull_flag_shelf_hold = True
+                # V7.9 MODUS #59B (Timeframe-Aware Active High-Volume Expansion Candle — Kasus $Impeach 15m Bar $106K->$293K Vol $335K):
+                # Pada koin usia 6j-24j, `fetch_pool_ohlcv` memakai bar 15-MENIT (3x durasi 5m), sehingga ekspansi breakout organik
+                # dari base panjang wajar mencetak +60% s/d +280% dalam 1 bar 15m dengan konsolidasi nafas 12%-32% di atas bodi tebal!
+                is_active_high_vol_expansion = bool(
+                    (has_heavy_dev_capital or is_verified_cto)
+                    and h_v > o_v
+                    and row_vol >= (30_000.0 if is_15m_or_higher_tf else 45_000.0)
+                    and c_v >= (o_v * 1.40)
+                    and ((c_v - o_v) / (h_v - o_v)) >= 0.65
+                    and current_price_usd >= (o_v * 1.35)
+                    and wick_slam_pct <= (32.0 if is_15m_or_higher_tf else 22.0)
+                )
                 if (
                     candle_pump_pct >= 52.0
                     and wick_slam_pct >= 11.0
@@ -7150,6 +7349,7 @@ def evaluate_ohlcv_ath_trap(
                     and not is_healthy_birth_discovery
                     and not is_organic_staircase_breakout
                     and not is_bull_flag_shelf_hold
+                    and not is_active_high_vol_expansion
                 ):
                     return (
                         False,
@@ -7354,7 +7554,7 @@ def evaluate_ohlcv_ath_trap(
         is_bull_flag_ceiling_coil = False
         if (
             len(recent_wave_slice) >= 3
-            and age_minutes <= 60.0
+            and age_minutes <= 360.0
             and (has_heavy_dev_capital or is_verified_cto)
             and float(recent_wave_slice[-1][2] or 0.0) < recent_wave_high
             and float(recent_wave_slice[-2][2] or 0.0) < recent_wave_high
@@ -8137,13 +8337,37 @@ def audit_and_dispatch_candidate(
             chart_1m_payload=chart_1m_data,
         )
         if not mm_ok:
-            return {
-                "token": f"{name} (${symbol})",
-                "mint": mint,
-                "verdict": "SKIP",
-                "reason": mm_reason,
-            }
+            mm_std_fallback = metrics.get("std_fallback_metrics")
+            is_hard_mm_security_veto = any(
+                v in str(mm_reason or "")
+                for v in (
+                    "MODUS #52C",
+                    "Jaringan transfer-split insider",
+                    "Kolam Sekunder Satu-Sisi",
+                    "Out-of-Range DLMM Spoof",
+                    "Mint Authority",
+                    "Freeze Authority",
+                    "Pajak Transfer",
+                    "TARIK BID",
+                    "luar pool memegang terlalu besar",
+                    "Top 10 luar pool",
+                )
+            )
+            if not isinstance(mm_std_fallback, dict) or not mm_std_fallback or is_hard_mm_security_veto:
+                return {
+                    "token": f"{name} (${symbol})",
+                    "mint": mint,
+                    "verdict": "SKIP",
+                    "reason": mm_reason,
+                }
+            # V7.9 MODUS #59A (Seamless Track-1 -> Track-2 Relay):
+            metrics = dict(mm_std_fallback)
+            is_mm_micro_lane = False
+            if isinstance(live_jup_mm, dict) and live_jup_mm and not isinstance(best_pair.get("jup_intel"), dict):
+                best_pair = dict(best_pair)
+                best_pair["jup_intel"] = live_jup_mm
 
+    if is_mm_micro_lane:
         is_fresh_inject_entry = bool(mm_meta.get("is_fresh_capital_injection"))
         fresh_inject_summary = str(mm_meta.get("fresh_injection_summary") or "")
         mm_rt_loss = float(rt_res.get("rt_loss_pct") or 0.0)
@@ -8362,13 +8586,20 @@ def audit_and_dispatch_candidate(
         _rc_burn = ((1_000_000_000.0 - _rc_ui) / 1_000_000_000.0 * 100.0) if (400_000_000.0 <= _rc_ui < 999_000_000.0 and _rc_dec == 6) else 0.0
         _rc_cbal = float(rug_data.get("creatorBalance") or 0.0)
         _rc_cpct = (_rc_cbal / _rc_sup * 100.0) if _rc_sup > 0.0 else 0.0
-        _rc_hold = int(rug_data.get("totalHolders") or 0)
+        _jup_s2_pre = (
+            best_pair.get("jup_intel")
+            if isinstance(best_pair.get("jup_intel"), dict)
+            else (live_jup_mm if isinstance(live_jup_mm, dict) else {})
+        )
+        _rc_hold = int(rug_data.get("totalHolders") or _jup_s2_pre.get("holder_count") or 0)
         _rc_net_pct = (
             sum((float(n.get("currentHolding") or 0.0) / _rc_sup) * 100.0 for n in (rug_data.get("insiderNetworks") or []) if isinstance(n, dict))
             if _rc_sup > 0.0
             else 0.0
         )
-        _rc_clean_net = int(rug_data.get("graphInsidersDetected") or 0) == 0 and _rc_net_pct < 1.0
+        _rc_clean_net = int(rug_data.get("graphInsidersDetected") or 0) == 0 and (
+            _rc_net_pct < 1.0 or (_jup_s2_pre and float(_jup_s2_pre.get("insider_pct") or 0.0) < 2.0)
+        )
         _pre_cto_flag = bool(
             _rc_cpct <= 0.15
             and (
@@ -9124,18 +9355,6 @@ def _select_dual_track_candidate(
     effective_boost = max(int(boost_amount or 0), pair_boost)
     mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
 
-    # Prioritaskan evaluasi Jalur Koin Bot Bermodal Besar (<$10 Manual 2-Alert) mulai dari $36K s/d $1.5M (Suntikan Modal Baru)!
-    if MM_MICRO_MIN_MC <= mc <= MM_LARGE_FRESH_INJECT_MAX_SPOT_MC:
-        mm_ok, _, mm_metrics = evaluate_mm_staircase_micro_candidate(
-            best_pair,
-            pair_count=pair_count,
-            boost_amount=effective_boost,
-            all_pairs=all_pairs,
-            dex_orders_payload=dex_orders_payload,
-        )
-        if mm_ok:
-            return True, "LOLOS TAHAP 1 PARASIT BANDAR (<$10 -> TP +100%)", mm_metrics
-
     std_ok, std_reason, std_metrics = evaluate_market_candidate(
         best_pair,
         pair_count=pair_count,
@@ -9143,14 +9362,9 @@ def _select_dual_track_candidate(
         all_pairs=all_pairs,
         dex_orders_payload=dex_orders_payload,
     )
-    if EARLY_WHALE_MIN_MC <= mc <= EARLY_WHALE_MAX_SPOT_MC:
-        ew_ok, _, ew_metrics = evaluate_early_whale_candidate(
-            best_pair, pair_count=pair_count, boost_amount=effective_boost
-        )
-        if ew_ok:
-            ew_metrics["std_fallback_metrics"] = std_metrics if std_ok else None
-            return True, "LOLOS TAHAP 1 MASUK DI AWAL", ew_metrics
-
+    valid_std_metrics = dict(std_metrics) if std_ok else None
+    std_final_ok = std_ok
+    std_final_reason = std_reason
     if std_ok and enable_selangkah_bot is False:
         is_likely_pre_bot = bool(
             mc <= 260_000.0
@@ -9166,17 +9380,43 @@ def _select_dual_track_candidate(
                 dex_orders_payload=dex_orders_payload,
             )
             if ok_police_hot:
-                std_metrics = dict(std_metrics)
-                std_metrics["is_crypto_police_early_hot"] = True
-                std_metrics["crypto_police_badges"] = police_badges
-                return True, "LOLOS TAHAP 1 POLISI KRIPTO DETEKSI DINI KOIN HANGAT", std_metrics
-            return (
-                False,
-                "SKIP V7.2: Alert SELANGKAH DI DEPAN BOT dinonaktifkan permanen — fokus penuh pada ALERT 1/2 & 2/2 Koin Bot Bermodal Besar",
-                {},
-            )
+                valid_std_metrics = dict(std_metrics)
+                valid_std_metrics["is_crypto_police_early_hot"] = True
+                valid_std_metrics["crypto_police_badges"] = police_badges
+                std_final_ok = True
+                std_final_reason = "LOLOS TAHAP 1 POLISI KRIPTO DETEKSI DINI KOIN HANGAT"
+            else:
+                valid_std_metrics = None
+                std_final_ok = False
+                std_final_reason = (
+                    "SKIP V7.2: Alert SELANGKAH DI DEPAN BOT dinonaktifkan permanen — fokus penuh pada ALERT 1/2 & 2/2 Koin Bot Bermodal Besar"
+                )
 
-    return std_ok, std_reason, std_metrics
+    # Prioritaskan evaluasi Jalur Koin Bot Bermodal Besar (<$10 Manual 2-Alert) mulai dari $36K s/d $1.5M,
+    # DENGAN menyertakan `std_fallback_metrics` bila Track-2 / Corridor Sniper juga lolos mandiri agar tidak pernah membajak buntu!
+    if MM_MICRO_MIN_MC <= mc <= MM_LARGE_FRESH_INJECT_MAX_SPOT_MC:
+        mm_ok, _, mm_metrics = evaluate_mm_staircase_micro_candidate(
+            best_pair,
+            pair_count=pair_count,
+            boost_amount=effective_boost,
+            all_pairs=all_pairs,
+            dex_orders_payload=dex_orders_payload,
+        )
+        if mm_ok:
+            mm_metrics = dict(mm_metrics)
+            if valid_std_metrics:
+                mm_metrics["std_fallback_metrics"] = valid_std_metrics
+            return True, "LOLOS TAHAP 1 PARASIT BANDAR (<$10 -> TP +100%)", mm_metrics
+
+    if EARLY_WHALE_MIN_MC <= mc <= EARLY_WHALE_MAX_SPOT_MC:
+        ew_ok, _, ew_metrics = evaluate_early_whale_candidate(
+            best_pair, pair_count=pair_count, boost_amount=effective_boost
+        )
+        if ew_ok:
+            ew_metrics["std_fallback_metrics"] = valid_std_metrics
+            return True, "LOLOS TAHAP 1 MASUK DI AWAL", ew_metrics
+
+    return std_final_ok, std_final_reason, (valid_std_metrics or {})
 
 
 def _effective_pair_rank_key(pair: dict) -> float:
@@ -9440,6 +9680,7 @@ def run_live_market_scan(engine, config) -> dict:
             "jup_gems": (fetch_jupiter_trench_gems, (1.9,)),
             "jup_org_5m": (_fetch_json_fast, ("https://datapi.jup.ag/v1/assets/toporganicscore/5m?limit=50", 1.9)),
             "jup_org_1h": (_fetch_json_fast, ("https://datapi.jup.ag/v1/assets/toporganicscore/1h?limit=50", 1.9)),
+            "jup_traded_5m": (_fetch_json_fast, ("https://datapi.jup.ag/v1/assets/toptraded/5m?limit=50", 1.9)),
             "jup_assets_5m": (_fetch_json_fast, ("https://datapi.jup.ag/v1/assets/toptrending/5m?limit=50", 1.9)),
             "jup_assets_1h": (_fetch_json_fast, ("https://datapi.jup.ag/v1/assets/toptrending/1h?limit=50", 1.9)),
             "jup_5m": (_fetch_json_fast, ("https://datapi.jup.ag/v1/pools/toptrending/5m", 1.9)),
@@ -9457,12 +9698,13 @@ def run_live_market_scan(engine, config) -> dict:
             "prof": (_fetch_json_fast, ("https://api.dexscreener.com/token-profiles/latest/v1", 2.0)),
         },
         hard_timeout_sec=2.25,
-        max_workers=20,
+        max_workers=21,
     )
 
     jup_gems = feed_results.get("jup_gems")
     jup_org_5m = feed_results.get("jup_org_5m")
     jup_org_1h = feed_results.get("jup_org_1h")
+    jup_traded_5m = feed_results.get("jup_traded_5m")
     jup_assets_5m = feed_results.get("jup_assets_5m")
     jup_assets_1h = feed_results.get("jup_assets_1h")
     jup_5m = feed_results.get("jup_5m")
@@ -9574,6 +9816,7 @@ def run_live_market_scan(engine, config) -> dict:
 
     for _asset_feed, _asset_tag, _asset_bucket, _asset_liq in (
         (jup_org_5m, "jup_org_5m", jup_organic_items, 10_500.0),
+        (jup_traded_5m, "jup_traded_5m", jup_trending_items, 12_000.0),
         (jup_assets_5m, "jup_assets_5m", jup_trending_items, 10_500.0),
         (jup_org_1h, "jup_org_1h", jup_1h_items, 14_000.0),
         (jup_assets_1h, "jup_assets_1h", jup_1h_items, 14_000.0),
@@ -9634,11 +9877,11 @@ def run_live_market_scan(engine, config) -> dict:
             if ch in ("solana", "bsc", "base") and p.get("tokenAddress"):
                 profile_items.append((ch, p["tokenAddress"]))
 
-    # Prioritas Tertinggi V7.0: Pre-DEX Curve, T+0s Graduated, Organic Score 5m, Trending 5m & 1h Rebounds, + MM-Staircase (<$10)
+    # Prioritas Tertinggi V7.9: Pre-DEX Curve, T+0s Graduated, Organic Score 5m, TopTraded+Trending 5m & 1h Rebounds, + MM-Staircase (<$10)
     ordered_candidates.extend(jup_pre_grad_items[:10])
     ordered_candidates.extend(jup_graduated_items[:10])
     ordered_candidates.extend(jup_organic_items[:14])
-    ordered_candidates.extend(jup_trending_items[:12])
+    ordered_candidates.extend(jup_trending_items[:16])
     ordered_candidates.extend(jup_1h_items[:10])
     ordered_candidates.extend(jup_mm_staircase_items[:10])
     ordered_candidates.extend(_collect_gt(gt_5m_p1, "solana"))
