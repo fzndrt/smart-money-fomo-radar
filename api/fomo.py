@@ -52,6 +52,8 @@ HARD_QUOTE_MINTS = {
     SOL_MINT,
     "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",  # PUMP (Pump.fun Official Ecosystem Quote)
     "6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx",  # STONK (Stonk.fun / Raydium LaunchLab Official Ecosystem Quote)
+    "XspzcW1PRtgf6Wj92HCiZdjzKCyFekVD8P5Ueh3dRMX",  # MSFTx (Pump.fun Synthetic Equities Ecosystem Quote)
+    "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp",  # AAPLx (Pump.fun Synthetic Equities Apple Ecosystem Quote)
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",  # USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
     "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",  # WBTC (Wormhole Official)
@@ -1181,7 +1183,37 @@ def _evaluate_crypto_police_early_hot_runner(
         and (p_m5 >= req_min_p_m5 or p_h1 >= req_min_p_h1 or is_police_wave2_v_reclaim or is_bull_flag_coil_t1)
         and (clicks_per_buyer <= 0.0 or clicks_per_buyer <= 3.6)
     )
-    if is_post_dev_dump_relay:
+    # -------------------------------------------------------------------------
+    # TRACK 3: HIGH-CONVICTION CLEAN-LAUNCH ANCHOR (MODUS #61 - V8.1)
+    # Menangkap koin bersih pasca kelulusan DEX (<=45m) ber-transaksi santai (>=160 tx)
+    # HANYA JIKA terkunci oleh 5 Pilar Kompensasi: Dev 0%, LP tebal >=$26K & >=18% MC,
+    # dompet murni terdesentralisasi, serta dominasi pembeli nyata!
+    # -------------------------------------------------------------------------
+    is_track3_candidate = bool(
+        age_mins <= 45.0
+        and 65_000.0 <= mc <= 240_000.0
+        and dev_bal <= 0.15
+        and liq >= 26_000.0
+        and ((liq / max(1.0, mc)) * 100.0) >= 18.0
+        and (
+            not ji
+            or (
+                float(ji.get("sniper_pct") or 0.0) < 5.5
+                and float(ji.get("insider_pct") or 0.0) < 4.0
+                and float(ji.get("bundle_hold_pct") or 0.0) < 4.5
+                and bot_pct < 24.0
+                and float(ji.get("organic_score") or 0.0) >= 55.0
+            )
+        )
+        and b_m5 >= (s_m5 * 1.25)
+        and (b_usd_5m <= 0.0 or b_usd_5m >= (s_usd_5m * 1.35))
+        and (p_m5 >= 6.5 or p_h1 >= 25.0)
+    )
+
+    if is_track3_candidate:
+        usd_mult_t3 = (b_usd_5m / max(1.0, s_usd_5m)) if b_usd_5m > 0.0 else (b_m5 / float(max(1, s_m5)))
+        badges.append(f"TRACK 3: High-Conviction Clean-Launch (Dev {dev_bal:.2f}% · LP ${liq:,.0f} · Arus Beli {usd_mult_t3:.2f}x)")
+    elif is_post_dev_dump_relay:
         usd_mult = b_usd_5m / max(1.0, s_usd_5m)
         mc_tier = "Cult $1M+" if mc >= 1_000_000.0 else ("Mega $260K+" if mc >= 260_000.0 else "Base")
         badges.append(f"TRACK 2: Estafet CTO Komunitas Aman ({mc_tier} · Skor {org_sc:.0f} · Arus Beli USD {usd_mult:.2f}x)")
@@ -1778,7 +1810,27 @@ def _evaluate_wall_absorption_override(
         )
     )
 
-    if not (is_whale_velocity_absorption or is_sovereign_staircase_absorption):
+    # MODE C (V8.1 MODUS #61 — Clean-Launch Anchor Wall Absorption):
+    # Koin bersih pasca kelulusan di Tembok $86k-$108k (dev 0%, LP tebal >=$26K & >=20% MC, sniper/insider bersih,
+    # arus beli dominan >=1.40x): diizinkan menembus Zona Merah $100K karena kolam kolateral tebal menjamin
+    # penyerapan bantingan sniper awal!
+    is_clean_launch_wall_absorption = bool(
+        c_id == 1
+        and 86_000.0 < mc <= 108_000.0
+        and jup_intel
+        and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.15
+        and float(jup_intel.get("sniper_pct") or 0.0) < 5.5
+        and float(jup_intel.get("insider_pct") or 0.0) < 4.0
+        and liq >= 26_000.0
+        and ((liq / max(1.0, mc)) * 100.0) >= 20.0
+        and b_m5 > s_m5
+        and (b_m5 / float(max(1, s_m5))) >= 1.40
+        and p_m5 >= 5.0
+        and p_h1 >= 20.0
+        and int(jup_intel.get("holder_count") or 0) >= 300
+    )
+
+    if not (is_whale_velocity_absorption or is_sovereign_staircase_absorption or is_clean_launch_wall_absorption):
         return None
 
     tp_mc = min(tp_cap_mc, max(mc * 1.42, wall_clear_mc * 1.28))
@@ -2543,6 +2595,26 @@ def evaluate_market_candidate(
         and _tx_per_min_live >= 26.0
     ):
         effective_min_cum_tx = min(effective_min_cum_tx, max(115, int(age_minutes * 26.0)))
+    # V8.1 MODUS #61 (Track 3 High-Conviction Clean-Launch Anchor):
+    # Koin bersih pasca kelulusan (dev <= 0.15%, LP tebal >= $26K & >= 18% MC, usia <= 45m, dominasi beli):
+    # Ambang batas transaksi dilonggarkan dinamis ke >=160 tx (atau age * 16 tx) agar koin berdarah biru
+    # seperti $Leonida ($88K-$105K, LP $41K, dev 0%) tidak gugur prematur!
+    elif (
+        age_minutes <= 45.0
+        and mc <= 240_000.0
+        and liq >= 26_000.0
+        and ((liq / max(1.0, mc)) * 100.0) >= 18.0
+        and (
+            not _jup_s1
+            or (
+                float(_jup_s1.get("dev_bal_pct") or 0.0) <= 0.15
+                and float(_jup_s1.get("sniper_pct") or 0.0) < 5.5
+                and float(_jup_s1.get("insider_pct") or 0.0) < 4.0
+            )
+        )
+        and cum_tx_24h >= 160
+    ):
+        effective_min_cum_tx = min(effective_min_cum_tx, max(160, int(age_minutes * 16.0)))
     if cum_tx_24h < effective_min_cum_tx:
         return (
             False,
@@ -9232,26 +9304,36 @@ def audit_and_dispatch_candidate(
             }
 
     use_police_hot_header = bool(
-        dna_meta.get("is_pre_bot_frontrun")
+        is_police_hot_s2
         and not _is_selangkah_bot_alert_enabled(config)
-        and is_police_hot_s2
     )
-    if use_police_hot_header:
-        runner_tp2_mc = round(max(tp_mc * 1.45, projected_entry_mc * 2.55), 0)
-        runner_tp3_mc = round(max(runner_tp2_mc * 1.55, projected_entry_mc * 4.10), 0)
-        moonbag_note = (
-            f"🚀 *Rencana Kawal Koin Hangat (+100% -> +300%+):* Jual `50%` di `${tp_mc:,.0f}` (Kunci Modal+Untung), "
-            f"`30%` di `${runner_tp2_mc:,.0f}`, & biarkan `20% Moonbag` kawal lari `+300%+` ke `${runner_tp3_mc:,.0f}+`!\n"
-        )
-
     is_track1_dev_hostage = any("TRACK 1" in str(b) for b in police_badges_s2)
     is_track2_cto_relay = any("TRACK 2" in str(b) for b in police_badges_s2)
+    is_track3_clean_launch = any("TRACK 3" in str(b) for b in police_badges_s2)
+
+    if use_police_hot_header:
+        if is_track3_clean_launch:
+            t3_tp1_mc = round(max(tp_mc * 1.15, projected_entry_mc * 1.50), 0)
+            t3_tp2_mc = round(max(t3_tp1_mc * 1.35, projected_entry_mc * 2.00), 0)
+            moonbag_note = (
+                f"🎯 *Rencana Panen Cepat Track 3 (+50% s/d +100%):* Tarik modal + profit `50%` di `${t3_tp1_mc:,.0f}` (+50% Bersih), "
+                f"kunci `30%` di `${t3_tp2_mc:,.0f}` (+100%), & biarkan sisa `20% Free Moonbag` kawal ekspansi bebas tanpa beban!\n"
+            )
+        else:
+            runner_tp2_mc = round(max(tp_mc * 1.45, projected_entry_mc * 2.55), 0)
+            runner_tp3_mc = round(max(runner_tp2_mc * 1.55, projected_entry_mc * 4.10), 0)
+            moonbag_note = (
+                f"🚀 *Rencana Kawal Koin Hangat (+100% -> +300%+):* Jual `50%` di `${tp_mc:,.0f}` (Kunci Modal+Untung), "
+                f"`30%` di `${runner_tp2_mc:,.0f}`, & biarkan `20% Moonbag` kawal lari `+300%+` ke `${runner_tp3_mc:,.0f}+`!\n"
+            )
 
     if use_police_hot_header:
         if is_track1_dev_hostage:
             header_title = f"🚓🔥 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT · TRACK 1: DEV TERSANDERA MODAL ({chain_id.upper()} V7.5)]*"
         elif is_track2_cto_relay:
             header_title = f"🚓👑 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT · TRACK 2: ESTAFET CTO KOMUNITAS AMAN ({chain_id.upper()} V7.5)]*"
+        elif is_track3_clean_launch:
+            header_title = f"🚓🛡️ *[POLISI KRIPTO — TRACK 3: HIGH-CONVICTION CLEAN-LAUNCH ANCHOR ({chain_id.upper()} V8.1)]*"
         else:
             header_title = f"🚓🔥 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT ({chain_id.upper()} V7.5)]*"
     else:
