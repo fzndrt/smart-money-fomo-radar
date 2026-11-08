@@ -5063,6 +5063,7 @@ def _audit_single_active_mm_position(mint: str, pos: dict, config) -> dict:
         f"🧮 *Radar Modal Bandar vs Uang Masuk (Real-Time):*\n"
         f"• *Alasan Keluar:* {trigger_detail}\n"
         f"• *Est. Modal Pokok Bandar:* `${dev_breakeven:,.0f}` *(Target Modal+Untung: `${dev_profit_goal:,.0f}`)*\n"
+        f"• *Est. MC Titik Impas Dev:* `~${float(pos.get('est_bandar_harvest_mc') or pos.get('max_hold_ceiling_mc') or 0.0):,.0f}` *(Zona Rawan Panen Bandar)*\n"
         f"• *Uang Masuk (Buyer Asli + PvP):* `${total_ext_gross:,.0f}` grosir / `${total_ext_net:,.0f}` bersih (`{live_org_buyers}` buyer asli){pvp_line}\n\n"
         f"⚡ *PROTOKOL JUAL MANUAL DETIK INI (<$10 MAX):*\n"
         f"• Klik link Jupiter di bawah ➡️ **SWAP MANUAL 100% SELURUH TOKEN KE SOL SEKARANG JUGA** (Jangan sisakan moonbag!)\n"
@@ -8447,6 +8448,12 @@ def audit_and_dispatch_candidate(
         mm_total_friction = round(mm_rt_loss + 0.8, 2)
         cap_rec = mm_meta.get("capital_recovery") or {}
         safe_max_hold_mc = float(cap_rec.get("safe_max_hold_mc") or round(mm_proj_mc * 2.02, 0))
+        est_bandar_harvest_mc = float(cap_rec.get("est_bandar_harvest_mc") or 0.0)
+        if est_bandar_harvest_mc <= 0.0:
+            est_bandar_harvest_mc = round(max(safe_max_hold_mc, mm_proj_mc * 2.15), 0)
+        amm_runway_mult = float(cap_rec.get("amm_runway_mult") or 0.0)
+        if amm_runway_mult <= 0.0:
+            amm_runway_mult = round(est_bandar_harvest_mc / max(1.0, mm_proj_mc), 2)
         if mm_live_mc > MM_MICRO_FRESH_INJECT_MAX_SPOT_MC and safe_max_hold_mc < (mm_proj_mc * 2.0):
             mm_tp_mult = max(1.45, min(2.00, (safe_max_hold_mc / max(1.0, mm_proj_mc)) * 0.96))
         else:
@@ -8491,7 +8498,7 @@ def audit_and_dispatch_candidate(
             else (
                 "ALERT 1/2 · SUNTIKAN MODAL BARU KOIN BOT (MC <=$250K · <$10 MAX)"
                 if (is_fresh_inject_entry and (mm_live_mc > MM_MICRO_MAX_SPOT_MC or float(metrics.get("age_minutes") or 0.0) > MM_MICRO_MAX_AGE_MINS))
-                else "ALERT 1/2 · MASUK AWAL KOIN BOT — PARASIT MODAL BANDAR (<$10 MAX)"
+                else "ALERT 1/2 · RADAR PARASIT MODAL BANDAR & DEVELOPER (TUNGGANGI MESIN BOT · <$10 MAX)"
             )
         )
         fresh_inject_line = (
@@ -8501,20 +8508,24 @@ def audit_and_dispatch_candidate(
         )
 
         mm_alert_msg = (
-            f"🤖⚡ *[{mm_header_tag}]*\n"
-            f"🎯 *Mode Eksekusi Manual: Beli Peluru Mikro -> Tunggu Alert 2/2 atau Jual Manual +100%*\n\n"
+            f"🪱⚡ *[{mm_header_tag}]*\n"
+            f"🎯 *Mode Eksekusi Manual (Parasit): Beli Peluru Mikro -> Tunggu Alert 2/2 atau Panen Sebelum Modal Dev Balik!*\n\n"
             f"🪙 *Token:* {mm_safe_name} (`${mm_safe_sym}`) · *Usia DEX:* `{metrics['age_minutes']}m`\n"
             f"📍 *Mint:* `{mint}`\n"
             f"💵 *ATURAN MODAL WAJIB:* **Maksimal `$3 – $10` saja!** *(100% Kebal Radar Observer Bandar — DILARANG masuk besar!)*\n\n"
-            f"🔒 *Bukti Bandar Belum Balik Modal & Tidak Mungkin Tarik Habis Sekarang:*\n"
+            f"🔒 *Bukti Modal Hangus Dev & Mengapa Wajib Dipompa (Tidak Mungkin Dump Sekarang):*\n"
             f"{fresh_inject_line}"
             f"• *Sunk-Cost & LP Aktif:* `{mm_proofs_txt}`\n"
-            f"• *Est. Modal Pokok Bandar:* `${dev_be_usd:,.0f}` *(Target Impas+Untung Bandar: `~${dev_goal_usd:,.0f}`)*\n"
-            f"• *Uang Masuk (Buyer Asli{pvp_tag}):* Baru `${org_net_usd:,.0f}` bersih / `${org_gross_usd:,.0f}` grosir (`{org_rec_pct:.1f}%` modal bandar · `{org_buyers_cnt}` buyer asli) ➡️ **AMAN, Bandar masih tekor `{max(0.0, 100.0 - org_rec_pct):.0f}%` modalnya!**\n\n"
+            f"• *Est. Modal Pokok Developer:* `${dev_be_usd:,.0f}` *(Target Impas+Untung Dev: `~${dev_goal_usd:,.0f}`)*\n"
+            f"• *Uang Masuk (Buyer Asli{pvp_tag}):* Baru `${org_net_usd:,.0f}` bersih / `${org_gross_usd:,.0f}` grosir (`{org_rec_pct:.1f}%` modal dev · `{org_buyers_cnt}` buyer asli) ➡️ **AMAN, Bandar masih tekor `{max(0.0, 100.0 - org_rec_pct):.0f}%` modalnya!**\n"
+            f"🎯 *PADA MC MANA MODAL DEVELOPER BALIK (TITIK IMPAS BANDAR):*\n"
+            f"• **Est. MC Titik Impas Dev:** `~${est_bandar_harvest_mc:,.0f}` *(Runway `{amm_runway_mult:.1f}x`)*\n"
+            f"  *(Developer terpaksa harus mengerek harga minimal ke `~${est_bandar_harvest_mc:,.0f}` agar modal pokok ${dev_be_usd:,.0f} miliknya balik!)*\n\n"
             f"💰 *MC Live On-Chain:* `${mm_live_mc:,.0f}` *(Drift Slot: {mm_live_drift_pct:+.1f}%)*\n"
             f"⏱️ *Est. MC Saat Klik Manual (~{int(PIPELINE_REACTION_DELAY_SEC)}d):* `${mm_proj_mc:,.0f}`\n"
             f"🚧 *BATAS MAKSIMAL BOLEH BELI MANUAL:* `${mm_max_buy_mc:,.0f}` *(Lewat `${mm_max_buy_mc:,.0f}` = JANGAN KEJAR!)*\n"
-            f"🏁 *TARGET JUAL MANUAL 100% LUNAS (+100% BERSIH):* `${mm_tp_100_mc:,.0f}` *(Est. `+{mm_net_gain_pct}%` bersih)*\n"
+            f"🏁 *TARGET PANEN KITA (FRONT-RUN DEV · +100% BERSIH):* `${mm_tp_100_mc:,.0f}` *(Est. `+{mm_net_gain_pct}%` bersih)*\n"
+            f"  *(Kita panen 100% dan kabur di `${mm_tp_100_mc:,.0f}`, JAUH SEBELUM koin menyentuh titik impas dev `${est_bandar_harvest_mc:,.0f}`!)*\n\n"
             f"🛑 *BATAS MAKSIMAL HOLD & SISTEM 2-ALERT MANUAL:*\n"
             f"• *Batas Uang Masuk Sebelum Bandar Panen:* `${max_hold_org_gross:,.0f}` grosir / `${max_hold_org_net:,.0f}` bersih *(Buffer Manual `{MM_EXIT_BREAKEVEN_TRIGGER_PCT:.0f}%` modal · Plafon Kurva `~${safe_max_hold_mc:,.0f}`)*\n"
             f"• *Alert 2/2 (Keluar Manual):* `🛰️ AKTIF OTOMATIS (Paralel)` — Bot hanya kirim **1x Alert 2/2 (WAJIB JUAL 100%)** lebih awal (~25d ruang reaksi manual) begitu uang yang masuk hampir memenuhi modal developer!\n\n"
@@ -8551,6 +8562,7 @@ def audit_and_dispatch_candidate(
                     "shakeout_floor_mc": mm_floor_mc,
                     "dev_breakeven_usd": dev_be_usd,
                     "dev_profit_goal_usd": dev_goal_usd,
+                    "est_bandar_harvest_mc": est_bandar_harvest_mc,
                     "max_hold_org_net_usd": max_hold_org_net,
                     "max_hold_org_gross_usd": max_hold_org_gross,
                     "entry_org_gross_usd": org_gross_usd,
