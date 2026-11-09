@@ -72,7 +72,55 @@ HARD_QUOTE_MINTS = {
     "0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b",  # VIRTUAL (Base)
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",  # WETH (Ethereum)
     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # USDC (Ethereum)
+    "NVDAVuiB7hwd3m5Wa1JuHNovPaPG6BH1QNztbKFxNjv",  # NVDA (Backpack Securities / Raydium LaunchLab Synthetic Equity Quote)
 }
+
+
+SYNTHETIC_STOCK_TICKERS = {
+    "NVDA", "TSLA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "AMD", "NFLX",
+    "COIN", "MSTR", "SPY", "QQQ", "GOLD", "SILVER", "PAXG", "XAU", "XAG",
+    "USDG", "EURC", "PYUSD", "FDUSD", "USDE", "SUSDE", "CRVUSD", "GHO",
+}
+
+
+def is_dynamic_hard_quote_asset(
+    quote_addr: str,
+    quote_symbol: str = "",
+    pair: dict | None = None,
+    chain_id: str = "solana",
+) -> bool:
+    """
+    MODUS #62 (V8.3 — REKOGNISI DINAMIS ASET KUOTASI TANPA HARUS DAFTAR MANUAL):
+    Mengenali aset kuotasi keras (Hard-Quote) secara universal tanpa harus mendaftarkan
+    mint satu per satu ke `HARD_QUOTE_MINTS`.
+    Kriteria validitas dinamis:
+      1. Terdaftar di HARD_QUOTE_MINTS statis (100% backward compatible), ATAU
+      2. Memiliki likuiditas nyata di pool DEX terverifikasi (sp_usd >= $6,000 atau quote_reserve_usd >= $2,500), ATAU
+      3. Simbol kuotasi merupakan aset keuangan terindeks resmi (mis. saham sintetis NVDA, TSLA, AAPL, MSFT, komoditas emas/perak, stablecoin baru).
+    """
+    if not quote_addr:
+        return False
+    q_str = str(quote_addr).strip()
+    if q_str in HARD_QUOTE_MINTS or q_str.lower() in HARD_QUOTE_MINTS:
+        return True
+
+    sym_u = str(quote_symbol or "").strip().upper()
+    if sym_u in SYNTHETIC_STOCK_TICKERS:
+        return True
+
+    if isinstance(pair, dict):
+        base_addr = str((pair.get("baseToken") or {}).get("address") or "").strip()
+        if base_addr and q_str == base_addr:
+            return False
+        liq_d = pair.get("liquidity") or {}
+        liq_usd = float(liq_d.get("usd") or 0.0)
+        q_amt = float(liq_d.get("quote") or 0.0)
+        p_usd = float(pair.get("priceUsd") or 0.0)
+        if liq_usd >= 6_000.0 or (p_usd > 0.0 and q_amt > 0.0 and (q_amt * p_usd) >= 2_500.0):
+            return True
+
+    return False
+
 SUPPORTED_CHAINS = ("solana", "bsc", "base", "ethereum")
 GT_NETWORK_MAP = {"solana": "solana", "bsc": "bsc", "base": "base", "ethereum": "eth"}
 GOPLUS_CHAIN_MAP = {"bsc": "56", "base": "8453", "ethereum": "1"}
@@ -573,9 +621,10 @@ def _evaluate_heavy_developer_capital(
             if sp_usd < 8_000.0:
                 continue
             q_addr = str((sp.get("quoteToken") or {}).get("address") or "")
+            q_sym = str((sp.get("quoteToken") or {}).get("symbol") or "")
             ch_sp = str(sp.get("chainId") or "solana").lower()
             q_key = q_addr if ch_sp == "solana" else q_addr.lower()
-            if q_key not in HARD_QUOTE_MINTS and q_addr not in HARD_QUOTE_MINTS:
+            if not is_dynamic_hard_quote_asset(q_addr, q_sym, pair=sp, chain_id=ch_sp) and q_key not in HARD_QUOTE_MINTS and q_addr not in HARD_QUOTE_MINTS:
                 continue
             sp_p_usd = float(sp.get("priceUsd") or bp.get("priceUsd") or 0.0)
             sp_base_amt = float(sp_liq_d.get("base") or 0.0)
@@ -1074,13 +1123,14 @@ def _evaluate_crypto_police_early_hot_runner(
     # (seperti `STONKS / STONK` di Raydium CPMM), turunkan estimasi konservatif USD Buy/Sell dari `vol_m5` terverifikasi
     # HANYA bila audit on-chain membuktikan kerumunan organik murni (`org_sc >= 64`, `bot_pct < 20`, `clicks_per_buyer <= 3.2`).
     q_addr_pol = str((best_pair.get("quoteToken") or {}).get("address") or "").strip()
+    q_sym_pol = str((best_pair.get("quoteToken") or {}).get("symbol") or "").strip()
     if (
         ji
         and b_usd_5m <= 0.0
         and s_usd_5m <= 0.0
         and q_addr_pol
         and q_addr_pol != SOL_MINT
-        and q_addr_pol in HARD_QUOTE_MINTS
+        and (q_addr_pol in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(q_addr_pol, q_sym_pol, pair=best_pair))
         and vol_m5 > 0.0
         and (b_m5 + s_m5) >= 35
         and bs_m5_p >= 1.38
@@ -2289,13 +2339,14 @@ def evaluate_market_candidate(
         _s1_b_usd = float(_jup_s1.get("buy_vol_m5") or 0.0) if _jup_s1 else 0.0
         _s1_s_usd = float(_jup_s1.get("sell_vol_m5") or 0.0) if _jup_s1 else 0.0
         _s1_q_addr = str((best_pair.get("quoteToken") or {}).get("address") or "").strip()
+        _s1_q_sym = str((best_pair.get("quoteToken") or {}).get("symbol") or "").strip()
         if (
             _jup_s1
             and _s1_b_usd <= 0.0
             and _s1_s_usd <= 0.0
             and _s1_q_addr
             and _s1_q_addr != SOL_MINT
-            and _s1_q_addr in HARD_QUOTE_MINTS
+            and (_s1_q_addr in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(_s1_q_addr, _s1_q_sym, pair=best_pair))
             and vol_m5 > 0.0
             and total_m5 >= 35
             and _bs_m5_probe >= 1.38
@@ -4404,10 +4455,13 @@ def verify_mm_staircase_micro_stage2(
 
         base_m = str(lp.get("baseMint") or m.get("mintA") or "")
         quote_m = str(lp.get("quoteMint") or m.get("mintB") or "")
-        has_hard_quote_mint = (base_m in HARD_QUOTE_MINTS) or (quote_m in HARD_QUOTE_MINTS)
-        if base_m in HARD_QUOTE_MINTS:
+        has_hard_quote_mint = (
+            (base_m in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(base_m))
+            or (quote_m in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(quote_m))
+        )
+        if base_m in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(base_m):
             hard_usd = base_usd
-        elif quote_m in HARD_QUOTE_MINTS:
+        elif quote_m in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(quote_m):
             hard_usd = quote_usd
         elif base_m == mint and quote_m != mint:
             hard_usd = quote_usd
@@ -4510,7 +4564,8 @@ def verify_mm_staircase_micro_stage2(
     rt_loss_pct = float(rt_res.get("rt_loss_pct") or 0.0)
     depth_loss_pct = float(rt_res.get("depth_loss_pct") or rt_loss_pct)
     mm_q_addr = str((best_pair.get("quoteToken") or {}).get("address") or "").strip()
-    mm_is_eco_quote = bool(mm_q_addr and mm_q_addr != SOL_MINT and mm_q_addr in HARD_QUOTE_MINTS)
+    mm_q_sym = str((best_pair.get("quoteToken") or {}).get("symbol") or "").strip()
+    mm_is_eco_quote = bool(mm_q_addr and mm_q_addr != SOL_MINT and (mm_q_addr in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(mm_q_addr, mm_q_sym, pair=best_pair)))
     mm_eff_max_rt = min(7.8, MAX_ROUNDTRIP_LOSS_PCT + (tok22_mm_fee_pct * 2.0) + (0.65 if mm_is_eco_quote else 0.0))
     if rt_loss_pct > mm_eff_max_rt:
         return False, f"Friksi pulang-pergi 0.1 SOL terlalu mahal ({rt_loss_pct:.2f}% > {mm_eff_max_rt:.2f}%)", {}
@@ -5265,9 +5320,9 @@ def analyze_holders_and_lp_lock(
             hard_usd = 0.0
             base_m = str(lp.get("baseMint") or m.get("mintA") or "")
             quote_m = str(lp.get("quoteMint") or m.get("mintB") or "")
-            if base_m in HARD_QUOTE_MINTS:
+            if base_m in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(base_m, pair=best_pair):
                 hard_usd = base_usd
-            elif quote_m in HARD_QUOTE_MINTS:
+            elif quote_m in HARD_QUOTE_MINTS or is_dynamic_hard_quote_asset(quote_m, pair=best_pair):
                 hard_usd = quote_usd
             elif token_mint:
                 if base_m == token_mint and quote_m and quote_m != token_mint:
@@ -9652,12 +9707,17 @@ def _extract_gt_multichain_candidates(gt_payload, expected_chain: str = "solana"
             continue
         rels = (pool_item.get("relationships") or {})
         raw_attrs = pool_item.get("attributes") or {}
+        p_name = str(raw_attrs.get("name") or "")
+        p_tokens = [x.strip() for x in p_name.split("/") if x.strip()]
         for rel_key in ("base_token", "quote_token"):
             rel = (rels.get(rel_key) or {}).get("data") or {}
             tok_id = str(rel.get("id") or "")
             if tok_id.startswith(pref):
                 tok_addr = tok_id[len(pref):].strip()
                 check_key = tok_addr.lower() if expected_chain != "solana" else tok_addr
+                rel_sym = p_tokens[0] if (rel_key == "base_token" and len(p_tokens) > 0) else (p_tokens[1] if (rel_key == "quote_token" and len(p_tokens) > 1) else "")
+                if is_dynamic_hard_quote_asset(tok_addr, rel_sym, chain_id=expected_chain):
+                    continue
                 if tok_addr and check_key not in HARD_QUOTE_MINTS and tok_addr not in HARD_QUOTE_MINTS:
                     eff_attrs = (
                         _normalize_gt_attrs_for_target_token(pool_item, tok_addr, force_invert=True)
