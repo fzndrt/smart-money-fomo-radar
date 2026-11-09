@@ -1880,14 +1880,40 @@ def _evaluate_wall_absorption_override(
         and int(jup_intel.get("holder_count") or 0) >= 300
     )
 
-    if not (is_whale_velocity_absorption or is_sovereign_staircase_absorption or is_clean_launch_wall_absorption):
+    # MODE D (V8.4 MODUS #63 — HIGH-CAP ZERO-DUMP FORTRESS & SMART-BAIT PARASITE):
+    # Menangkap koin di MC $280K - $650K yang langsung muncul di DEX berkapitalisasi tinggi,
+    # HANYA JIKA terkunci oleh 5 Garansi Fisika Anti-Dump:
+    #   1. Dev Saldo 0% (dev_bal <= 0.05%),
+    #   2. LP Terkunci/Dibakar 100% dengan modal kolateral tebal (liq >= $32,000 & liq/mc >= 8.5%),
+    #   3. Suplai terdesentralisasi bersih (sniper < 4.0%, insider < 3.0%, bundle < 3.5%),
+    #   4. Arus beli aktif dominan (b_m5 >= s_m5 * 1.25 & net_inflow_5m > 0),
+    #   5. Momentum tangga sehat (p_m5 >= 4.5% & p_h1 >= 15.0%).
+    is_high_cap_zero_dump_fortress = bool(
+        (c_id in (2, 3))
+        and mc >= 280_000.0
+        and jup_intel
+        and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.05
+        and float(jup_intel.get("sniper_pct") or 0.0) < 4.0
+        and float(jup_intel.get("insider_pct") or 0.0) < 3.0
+        and float(jup_intel.get("bundle_hold_pct") or 0.0) < 3.5
+        and liq >= 32_000.0
+        and ((liq / max(1.0, mc)) * 100.0) >= 8.5
+        and b_m5 > s_m5
+        and (b_m5 / float(max(1, s_m5))) >= 1.25
+        and p_m5 >= 4.5
+        and p_h1 >= 15.0
+        and int(jup_intel.get("holder_count") or 0) >= 450
+        and (net_inflow_5m > 0 or float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.20)
+    )
+
+    if not (is_whale_velocity_absorption or is_sovereign_staircase_absorption or is_clean_launch_wall_absorption or is_high_cap_zero_dump_fortress):
         return None
 
     tp_mc = min(tp_cap_mc, max(mc * 1.42, wall_clear_mc * 1.28))
     if c_id == 3:
         eff_min_liq_ratio = 13.0 if is_whale_velocity_absorption else 11.5
     else:
-        eff_min_liq_ratio = 18.0 if is_whale_velocity_absorption else 14.5
+        eff_min_liq_ratio = 18.0 if is_whale_velocity_absorption else (10.5 if is_high_cap_zero_dump_fortress else 14.5)
     eff_min_wall_liq = min_wall_liq if is_whale_velocity_absorption else round(min_wall_liq * 0.82, 0)
     eff_min_wall_tx = min_wall_tx if is_whale_velocity_absorption else max(140, int(min_wall_tx * 0.40))
     return {
@@ -8567,7 +8593,7 @@ def audit_and_dispatch_candidate(
             f"🎯 *Mode Eksekusi Manual (Parasit): Beli Peluru Mikro -> Tunggu Alert 2/2 atau Panen Sebelum Modal Dev Balik!*\n\n"
             f"🪙 *Token:* {mm_safe_name} (`${mm_safe_sym}`) · *Usia DEX:* `{metrics['age_minutes']}m`\n"
             f"📍 *Mint:* `{mint}`\n"
-            f"💵 *ATURAN MODAL WAJIB:* **Maksimal `$3 – $10` saja!** *(100% Kebal Radar Observer Bandar — DILARANG masuk besar!)*\n\n"
+            f"💵 *ATURAN MODAL WAJIB:* **Maksimal `$3 – $10` (<$15)!** *(100% Kebal Radar Observer Bandar — DILARANG masuk besar!)*\n\n"
             f"🔒 *Bukti Modal Hangus Dev & Mengapa Wajib Dipompa (Tidak Mungkin Dump Sekarang):*\n"
             f"{fresh_inject_line}"
             f"• *Sunk-Cost & LP Aktif:* `{mm_proofs_txt}`\n"
@@ -8584,7 +8610,7 @@ def audit_and_dispatch_candidate(
             f"🛑 *BATAS MAKSIMAL HOLD & SISTEM 2-ALERT MANUAL:*\n"
             f"• *Batas Uang Masuk Sebelum Bandar Panen:* `${max_hold_org_gross:,.0f}` grosir / `${max_hold_org_net:,.0f}` bersih *(Buffer Manual `{MM_EXIT_BREAKEVEN_TRIGGER_PCT:.0f}%` modal · Plafon Kurva `~${safe_max_hold_mc:,.0f}`)*\n"
             f"• *Alert 2/2 (Keluar Manual):* `🛰️ AKTIF OTOMATIS (Paralel)` — Bot hanya kirim **1x Alert 2/2 (WAJIB JUAL 100%)** lebih awal (~25d ruang reaksi manual) begitu uang yang masuk hampir memenuhi modal developer!\n\n"
-            f"⚙️ *Protokol Eksekusi Manual Hemat Fee (<$10):*\n"
+            f"⚙️ *Protokol Eksekusi Manual Hemat Fee (<$15):*\n"
             f"• Klik link Jupiter di bawah (`SOL -> Token`), set *Priority/Jito Tip* kecil: `0.0003 – 0.0005 SOL` (`~$0.03-$0.05`)\n"
             f"• **1x Beli Manual -> 1x Jual Manual 100% Lunas** (JANGAN cicil TP & JANGAN sisakan moonbag!) + *Claim ATA Rent* sesudah jual\n"
             f"• *Batas Darurat Cabut Saklar:* Cut manual jika jebol lantai bawah `${mm_floor_mc:,.0f}` *(Tahan jarum kocokan wajar)*\n\n"
