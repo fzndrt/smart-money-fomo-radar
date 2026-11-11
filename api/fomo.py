@@ -1778,7 +1778,14 @@ def _evaluate_wall_absorption_override(
     elif 420_000.0 < mc <= 510_000.0:
         wall_spec = (3, "Lorong 3-PreBreak: Serapan Tembok $500k -> Menuju $695k+", 518_000.0, 548_000.0, 695_000.0, 46_000.0, 1100)
     if wall_spec is None:
-        return None
+        if mc >= 86_000.0:
+            c_id_d = 5 if mc > 2_650_000.0 else (4 if mc > 760_000.0 else (3 if mc > 420_000.0 else (2 if mc > 178_000.0 else 1)))
+            c_name_d = f"Lorong {c_id_d}: High-Conviction Expansion (${mc:,.0f})"
+            std_corridor_max = {1: 178_000.0, 2: 315_000.0 if mc <= 315_000.0 else 420_000.0, 3: 760_000.0, 4: 2_650_000.0, 5: 8_800_000.0}.get(c_id_d, mc * 1.45)
+            c_max_mc = std_corridor_max
+            wall_spec = (c_id_d, c_name_d, mc * 1.25, c_max_mc, mc * 1.65, 25_000.0, 300)
+        else:
+            return None
 
     c_id, c_name, wall_clear_mc, c_max_mc, tp_cap_mc, min_wall_liq, min_wall_tx = wall_spec
     liq = float((best_pair.get("liquidity") or {}).get("usd") or 0.0)
@@ -1906,30 +1913,178 @@ def _evaluate_wall_absorption_override(
         and (net_inflow_5m > 0 or float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.20)
     )
 
-    if not (is_whale_velocity_absorption or is_sovereign_staircase_absorption or is_clean_launch_wall_absorption or is_high_cap_zero_dump_fortress):
+    # MODE E (V8.5 MODUS #64 — LOGIKA TRADER SUKSES: SUB-$100K SNIPER ABSORPTION & WAVE-2 RETEST CONSOLIDATION GATEWAY):
+    # Mengintegrasikan pola sukses trader profesional:
+    # 1. Pintu Gerbang Sub-$100k -> $200k+: Menangkap koin di Tembok $86k - $108k yang menyerap buangan sniper awal
+    #    (dev <=0.10%, LP tebal >=$16k, sniper <6%, volume 5m >=$6.5k, inflow net positif, organic_score >=60).
+    # 2. Wave-2 Retest Consolidation: Menangkap koin di MC $215k - $340k yang membentuk pijakan lantai kokoh pasca-retest
+    #    (vol_m5 >= $12k, 4.5 <= p_m5 <= 28.0, b_m5 >= s_m5 * 1.25, dan net_inflow_5m > 0).
+    is_sub100k_sniper_absorption_gateway = bool(
+        c_id == 1
+        and (86_000.0 < mc <= 108_000.0)
+        and jup_intel
+        and vol_m5 >= max(6_500.0, mc * 0.06)
+        and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.10
+        and float(jup_intel.get("sniper_pct") or 0.0) < 6.0
+        and float(jup_intel.get("insider_pct") or 0.0) < 3.5
+        and float(jup_intel.get("bundle_hold_pct") or 0.0) < 4.0
+        and liq >= 16_000.0
+        and ((liq / max(1.0, mc)) * 100.0) >= 16.0
+        and b_m5 > s_m5
+        and (b_m5 / float(max(1, s_m5))) >= 1.25
+        and (p_m5 >= 4.5 or p_h1 >= 18.0)
+        and org_score >= 60.0
+        and int(jup_intel.get("holder_count") or 0) >= 180
+        and (net_inflow_5m > 0 or float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.20)
+    )
+
+    is_wave2_retest_consolidation_gateway = bool(
+        (c_id in (2, 3))
+        and (185_000.0 < mc <= 215_000.0 or 315_000.0 < mc <= 340_000.0)
+        and jup_intel
+        and vol_m5 >= max(12_000.0, mc * 0.045)
+        and float(jup_intel.get("buy_vol_m5") or 0.0) >= max(7_500.0, mc * 0.028)
+        and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.35
+        and float(jup_intel.get("sniper_pct") or 0.0) < 5.5
+        and float(jup_intel.get("insider_pct") or 0.0) < 4.0
+        and liq >= 25_000.0
+        and ((liq / max(1.0, mc)) * 100.0) >= 10.0
+        and (4.5 <= p_m5 <= 28.0)
+        and (p_h1 >= 15.0 or p_h6 >= 20.0)
+        and b_m5 > s_m5
+        and (b_m5 / float(max(1, s_m5))) >= 1.25
+        and org_score >= 62.0
+        and int(jup_intel.get("holder_count") or 0) >= 350
+        and (net_inflow_5m > 0 or float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.20)
+    )
+
+    p_created_w = best_pair.get("pairCreatedAt")
+    age_mins_w = max(1.0, ((time.time() * 1000.0) - float(p_created_w)) / 60000.0) if p_created_w else 20.0
+    vol_h1_w = float(((best_pair.get("volume") or {}).get("h1")) or 0.0)
+    accel_lazarus_w = (vol_m5 / 5.0) / max(1.0, (vol_h1_w / min(60.0, max(5.0, age_mins_w))))
+
+    # MODE F (V8.6 MODUS #65 — LAZARUS CTO REVIVAL GATEWAY):
+    # Mengintegrasikan fenomena kebangkitan koin komunitas pasca-dump/mati suri (seperti $X apeonx pasca-dump -77% jam 17:40 WIB
+    # melesat ke $750k+ jam 19:30-20:20 WIB):
+    # Kunci Penyelamat dari Kejatuhan (Anti-Falling Knife & Anti-Scam):
+    # 1. Usia koin >= 35.0m & MC $95k - $380k (bukan koin balita yang baru dump 5m lalu, sudah terbentuk dasar lantai).
+    # 2. Likuiditas riil sangat tebal (liq >= $28,000 & liq/mc >= 11.5%): koin scam/rug pull tidak memiliki LP sebesar ini!
+    # 3. Lilin 5m wajib HIJAU SEHAT (6.0 <= p_m5 <= 38.0%): dilarang masuk saat lilin merah crash dan dilarang >45% anti-pucuk.
+    # 4. Lonjakan Akselerasi Uang Segar (Fresh Velocity Surge): vol_m5 >= max(10_000.0, mc * 0.045) dan akselerasi m5 >= 1.75x
+    #    atau vol_m5 >= 16_000.0, membuktikan uang komunitas baru masuk menggantikan dev lama yang sudah cabut.
+    # 5. Kompensasi Arbitrase Multi-Pool: jika pair_count >= 2, tolerir B/S m5 >= 1.12x (karena bot MEV arbitrase membanjiri sell
+    #    di pool utama dan buy di Meteora/secondary pool); jika single pool wajib >= 1.25x.
+    is_lazarus_cto_revival_gateway = bool(
+        (c_id in (0, 1, 2, 3) or mc >= 35_000.0)
+        and (35_000.0 <= mc <= 450_000.0)
+        and (35.0 <= age_mins_w <= 525_600.0)
+        and liq >= (12_000.0 if mc < 72_000.0 else (22_000.0 if mc < 95_000.0 else 28_000.0))
+        and ((liq / max(1.0, mc)) * 100.0) >= 11.5
+        and (6.0 <= p_m5 <= 32.0)
+        and vol_m5 >= max(4_500.0 if mc < 72_000.0 else 10_000.0, mc * 0.045)
+        and b_m5 > s_m5
+        and (b_m5 / float(max(1, s_m5))) >= (1.12 if pair_count >= 2 else 1.25)
+        and (accel_lazarus_w >= 1.75 or vol_m5 >= (8_000.0 if mc < 72_000.0 else 16_000.0))
+        and (
+            not jup_intel
+            or (
+                float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.25
+                and float(jup_intel.get("sniper_pct") or 0.0) < 7.0
+                and float(jup_intel.get("insider_pct") or 0.0) < 5.0
+                and float(jup_intel.get("bundle_hold_pct") or 0.0) < 5.5
+                and int(jup_intel.get("holder_count") or 0) >= 180
+            )
+        )
+    )
+
+    # MODE G (V8.6 MODUS #66 — SOVEREIGN STEADY CLIMBER GATEWAY):
+    # Mengintegrasikan koin dengan pola kenaikan pelan tapi pasti (steady organic staircase seperti $STANK 5wsjHxT5...):
+    # 1. Usia koin matang / teruji (age_mins_w >= 180.0 atau holder_count >= 350).
+    # 2. Likuiditas riil tebal (liq >= $12_000.0 & liq/mc >= 2.0%).
+    # 3. Kenaikan pelan sehat (1.2 <= p_m5 <= 15.0% & (p_h1 >= 2.5% atau p_h6 >= 5.0% atau p_h24 >= 8.0%)).
+    # 4. Tekanan beli stabil (b_m5 >= s_m5 * (1.10 if pair_count >= 2 else 1.18)).
+    # 5. Dev zero-overhang (dev_bal_pct <= 0.20% & sniper_pct < 6% & insider_pct < 5%).
+    is_sovereign_steady_climber_gateway = bool(
+        (c_id in (0, 1, 2, 3) or mc >= 35_000.0)
+        and (age_mins_w >= 180.0 or (age_mins_w >= 90.0 and jup_intel and int(jup_intel.get("holder_count") or 0) >= 350))
+        and liq >= (12_000.0 if mc < 100_000.0 else (22_000.0 if mc < 150_000.0 else 32_000.0))
+        and ((liq / max(1.0, mc)) * 100.0) >= 2.0
+        and (1.2 <= p_m5 <= 15.0)
+        and (p_h1 >= 2.5 or p_h6 >= 5.0 or float((best_pair.get("priceChange") or {}).get("h24") or 0.0) >= 8.0)
+        and b_m5 >= s_m5
+        and (b_m5 / float(max(1, s_m5))) >= (1.10 if pair_count >= 2 else 1.18)
+        and vol_m5 >= (max(2_500.0, mc * 0.001) if mc >= 1_000_000.0 else max(3_500.0, mc * 0.003))
+        and (
+            not jup_intel
+            or (
+                float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.20
+                and float(jup_intel.get("sniper_pct") or 0.0) < 6.0
+                and float(jup_intel.get("insider_pct") or 0.0) < 5.0
+                and float(jup_intel.get("bundle_hold_pct") or 0.0) < 5.0
+                and int(jup_intel.get("holder_count") or 0) >= 350
+            )
+        )
+    )
+
+    if not (
+        is_whale_velocity_absorption
+        or is_sovereign_staircase_absorption
+        or is_clean_launch_wall_absorption
+        or is_high_cap_zero_dump_fortress
+        or is_sub100k_sniper_absorption_gateway
+        or is_wave2_retest_consolidation_gateway
+        or is_lazarus_cto_revival_gateway
+        or is_sovereign_steady_climber_gateway
+    ):
         return None
 
-    tp_mc = min(tp_cap_mc, max(mc * 1.42, wall_clear_mc * 1.28))
-    if c_id == 3:
-        eff_min_liq_ratio = 13.0 if is_whale_velocity_absorption else 11.5
+    if is_sub100k_sniper_absorption_gateway:
+        tp_mc = min(218_000.0, max(185_000.0, mc * 2.15))
+    elif is_wave2_retest_consolidation_gateway:
+        tp_mc = min(420_000.0, max(mc * 1.48, 385_000.0))
+    elif is_lazarus_cto_revival_gateway:
+        tp_mc = min(580_000.0, max(mc * 1.65, 340_000.0))
+    elif is_sovereign_steady_climber_gateway:
+        tp_mc = max(9_000_000.0, min(mc * 1.45, max(mc * 1.35, wall_clear_mc * 1.25))) if c_id == 5 else min(mc * 1.45, max(mc * 1.35, wall_clear_mc * 1.25))
     else:
-        eff_min_liq_ratio = 18.0 if is_whale_velocity_absorption else (10.5 if is_high_cap_zero_dump_fortress else 14.5)
+        tp_mc = max(9_000_000.0, mc * 1.65) if c_id == 5 else min(tp_cap_mc, max(mc * 1.42, wall_clear_mc * 1.28))
+
+    if c_id == 3:
+        eff_min_liq_ratio = 13.0 if is_whale_velocity_absorption else (2.0 if is_sovereign_steady_climber_gateway else 11.5)
+    else:
+        eff_min_liq_ratio = (
+            18.0
+            if is_whale_velocity_absorption
+            else (
+                2.0
+                if is_sovereign_steady_climber_gateway
+                else (
+                    10.0
+                    if (is_high_cap_zero_dump_fortress or is_wave2_retest_consolidation_gateway or is_sub100k_sniper_absorption_gateway or is_lazarus_cto_revival_gateway)
+                    else 14.5
+                )
+            )
+        )
     eff_min_wall_liq = min_wall_liq if is_whale_velocity_absorption else round(min_wall_liq * 0.82, 0)
     eff_min_wall_tx = min_wall_tx if is_whale_velocity_absorption else max(140, int(min_wall_tx * 0.40))
     return {
         "corridor_id": c_id,
         "corridor_name": c_name,
-        "corridor_max_mc": c_max_mc,
+        "corridor_max_mc": (mc * 1.45) if (is_lazarus_cto_revival_gateway or is_sovereign_steady_climber_gateway or is_high_cap_zero_dump_fortress) else c_max_mc,
         "min_liq": eff_min_wall_liq,
         "min_liq_ratio": eff_min_liq_ratio,
-        "min_turnover_h1": 0.55 if (is_whale_velocity_absorption and c_id == 3) else (0.65 if is_whale_velocity_absorption else 0.04),
-        "mature_turnover_h1": 0.14 if (is_whale_velocity_absorption and c_id == 3) else (0.18 if is_whale_velocity_absorption else 0.03),
+        "min_turnover_h1": 0.55 if (is_whale_velocity_absorption and c_id == 3) else (0.65 if is_whale_velocity_absorption else 0.03),
+        "mature_turnover_h1": 0.14 if (is_whale_velocity_absorption and c_id == 3) else (0.18 if is_whale_velocity_absorption else 0.02),
         "min_cum_tx": eff_min_wall_tx,
         "min_avg_ticket": 22.0,
         "target_tp_mc": tp_mc,
         "cut_loss_pct": 13.5,
         "wall_absorption_breakout": True,
         "sovereign_staircase_wall": is_sovereign_staircase_absorption,
+        "is_sub100k_sniper_absorption_gateway": is_sub100k_sniper_absorption_gateway,
+        "is_wave2_retest_consolidation_gateway": is_wave2_retest_consolidation_gateway,
+        "is_lazarus_cto_revival_gateway": is_lazarus_cto_revival_gateway,
+        "is_sovereign_steady_climber_gateway": is_sovereign_steady_climber_gateway,
         "wall_impulse_ratio": round(max(0.65, wall_impulse_ratio), 2),
     }
 
@@ -2138,7 +2293,7 @@ def classify_entry_corridor(
         }
 
     # LORONG 5 (MEGA-CULT TIER-1 EXPANSION — $5.25M - $8.80M): Terbang Menuju $14M - $50M+
-    tp_mc = min(13_800_000.0, mc * 1.46)
+    tp_mc = max(9_000_000.0, min(13_800_000.0, mc * 1.65))
     return True, "LORONG 5 (Mega-Cult Tier-1 > $5.25M)", {
         "corridor_id": 5,
         "corridor_name": "Lorong 5: Mega-Cult Tier-1 (> $5.25M) -> Ekspansi $14M-$50M+",
@@ -2409,11 +2564,13 @@ def evaluate_market_candidate(
             )
             or is_dormant_whale_coil
             or is_post_dev_dump_relay
+            or bool(c_cfg.get("is_lazarus_cto_revival_gateway"))
+            or bool(c_cfg.get("is_sovereign_steady_climber_gateway"))
         )
 
         if c_cfg["corridor_id"] == 0:
-            if is_base_awakening_ignition:
-                max_age_mins = 525_600.0 if int(_jup_s1.get("holder_count") or 0) >= 500 else 2_160.0
+            if is_base_awakening_ignition or bool(c_cfg.get("is_lazarus_cto_revival_gateway")) or bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
+                max_age_mins = 525_600.0
             else:
                 max_age_mins = 180.0 if (cum_tx_24h >= 1200 and liq >= 18_000.0) else 90.0
             if age_minutes > max_age_mins:
@@ -2423,7 +2580,7 @@ def evaluate_market_candidate(
                     f"dengan modal developer kecil/habis -> Diblokir ketat agar tidak terkecoh pancingan!",
                     {}
                 )
-        elif is_cto_multi_day_breakout or is_base_awakening_ignition:
+        elif is_cto_multi_day_breakout or is_base_awakening_ignition or bool(c_cfg.get("is_lazarus_cto_revival_gateway")) or bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
             max_age_mins = 525_600.0
         elif cum_tx_24h >= 5000 and liq >= 30_000.0:
             max_age_mins = 2160.0
@@ -2582,6 +2739,10 @@ def evaluate_market_candidate(
         min_p_m5 = 2.5
     elif is_verified_mature_cult and is_proven_climber:
         min_p_m5 = 3.5
+    if bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
+        min_p_m5 = 1.2
+    elif bool(c_cfg.get("is_lazarus_cto_revival_gateway")):
+        min_p_m5 = 6.0
     elif is_proven_climber and is_mega_corridor:
         min_p_m5 = 4.0
     elif is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall")) or is_post_graduation_bull_flag:
@@ -2754,9 +2915,20 @@ def evaluate_market_candidate(
         or is_verified_corridor_velocity_ignition
         or bool(c_cfg.get("wall_absorption_breakout"))
     )
-    _is_bull_or_vel_flow = bool(is_sub100k_propulsion_flow or is_post_graduation_bull_flag or is_verified_cto_bull_flag or is_verified_corridor_velocity_ignition)
-    min_bs_m5 = (1.30 if is_mega_corridor else (1.28 if _is_bull_or_vel_flow else 1.35)) if high_tx_organic_flow else 1.85
-    min_cvd = (13.0 if is_mega_corridor else (12.0 if _is_bull_or_vel_flow else 15.0)) if high_tx_organic_flow else 29.8
+    _is_gateway_multi_pool = bool(
+        (c_cfg.get("is_lazarus_cto_revival_gateway") or c_cfg.get("is_sovereign_steady_climber_gateway"))
+        and (pair_count >= 2 or buys_m5 >= sells_m5)
+    )
+    _is_bull_or_vel_flow = bool(
+        is_sub100k_propulsion_flow
+        or is_post_graduation_bull_flag
+        or is_verified_cto_bull_flag
+        or is_verified_corridor_velocity_ignition
+        or c_cfg.get("is_lazarus_cto_revival_gateway")
+        or c_cfg.get("is_sovereign_steady_climber_gateway")
+    )
+    min_bs_m5 = (1.12 if _is_gateway_multi_pool else (1.30 if is_mega_corridor else (1.28 if _is_bull_or_vel_flow else 1.35))) if high_tx_organic_flow else 1.85
+    min_cvd = (5.0 if _is_gateway_multi_pool else ((13.0 if is_mega_corridor else (12.0 if _is_bull_or_vel_flow else 15.0)))) if high_tx_organic_flow else 29.8
     h1_decay_floor = (
         0.70
         if (is_post_graduation_bull_flag or is_verified_cto_bull_flag)
@@ -2835,6 +3007,8 @@ def evaluate_market_candidate(
     )
     if is_verified_mature_cult:
         req_turnover_h1 = 0.014 if c_cfg["corridor_id"] == 4 else 0.010
+    elif bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
+        req_turnover_h1 = 0.008 if mc >= 1_000_000.0 else 0.012
     elif is_base_awakening_ignition or bool(c_cfg.get("sovereign_staircase_wall")):
         req_turnover_h1 = 0.022
     else:
@@ -2853,7 +3027,11 @@ def evaluate_market_candidate(
     vol_rate_m5 = vol_m5 / 5.0
     vol_rate_h1 = vol_h1 / effective_h1_mins
     accel_ratio = vol_rate_m5 / max(1.0, vol_rate_h1)
-    if (is_post_graduation_bull_flag and p_m5 >= 4.5 and buy_sell_ratio_m5 >= 1.28) or (
+    if bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
+        min_accel = 0.15
+    elif bool(c_cfg.get("is_lazarus_cto_revival_gateway")):
+        min_accel = 0.25
+    elif (is_post_graduation_bull_flag and p_m5 >= 4.5 and buy_sell_ratio_m5 >= 1.28) or (
         is_verified_cto_bull_flag and p_m5 >= 2.5 and buy_sell_ratio_m5 >= 1.28
     ):
         min_accel = 0.28
@@ -2889,8 +3067,15 @@ def evaluate_market_candidate(
     uniq_s_m5 = int(gt_crowd.get("sellers_m5") or 0)
 
     if age_minutes > 180.0 and not has_heavy_dev_cap and not is_mega_corridor:
-        min_lowcap_dev_vol_m5 = 8_000.0
-        min_lowcap_dev_vol_h1 = 8_000.0 if is_dormant_whale_coil else max(24_000.0, mc * 0.16)
+        if bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
+            min_lowcap_dev_vol_m5 = 1_500.0
+            min_lowcap_dev_vol_h1 = 8_000.0
+        elif bool(c_cfg.get("is_lazarus_cto_revival_gateway")):
+            min_lowcap_dev_vol_m5 = 8_000.0
+            min_lowcap_dev_vol_h1 = 8_000.0
+        else:
+            min_lowcap_dev_vol_m5 = 8_000.0
+            min_lowcap_dev_vol_h1 = 8_000.0 if is_dormant_whale_coil else max(24_000.0, mc * 0.16)
         if vol_m5 < min_lowcap_dev_vol_m5 or vol_h1 < min_lowcap_dev_vol_h1:
             return (
                 False,
@@ -2898,14 +3083,17 @@ def evaluate_market_candidate(
                 f"(Vol 5m ${vol_m5:,.0f} < ${min_lowcap_dev_vol_m5:,.0f} atau Vol 1j ${vol_h1:,.0f} < ${min_lowcap_dev_vol_h1:,.0f}) -> Rawan terkecoh pancingan!",
                 {},
             )
-        if total_m5 < 38 or buy_sell_ratio_m5 < 1.50:
+        _req_s2_bs = 1.10 if (pair_count >= 2 or bool(c_cfg.get("is_lazarus_cto_revival_gateway")) or bool(c_cfg.get("is_sovereign_steady_climber_gateway"))) else 1.50
+        _req_s2_tx = 24 if (bool(c_cfg.get("is_lazarus_cto_revival_gateway")) or bool(c_cfg.get("is_sovereign_steady_climber_gateway"))) else 38
+        if total_m5 < _req_s2_tx or buy_sell_ratio_m5 < _req_s2_bs:
             return (
                 False,
-                f"MODUS #51 (Orderflow Kurang Padat Tanpa Modal Dev): Koin >3j tanpa modal besar developer wajib >=38 tx & >=1.50x B/S "
+                f"MODUS #51 (Orderflow Kurang Padat Tanpa Modal Dev): Koin >3j tanpa modal besar developer wajib >={_req_s2_tx} tx & >={_req_s2_bs:.2f}x B/S "
                 f"(saat ini {total_m5} tx · {buy_sell_ratio_m5:.2f}x)!",
                 {},
             )
-        if uniq_b_m5 > 0 and (uniq_b_m5 < 22 or uniq_b_m5 < int(max(1, uniq_s_m5) * 1.50)):
+        _req_s2_uniq_ratio = 1.10 if (c_cfg.get("is_lazarus_cto_revival_gateway") or c_cfg.get("is_sovereign_steady_climber_gateway")) else 1.50
+        if uniq_b_m5 > 0 and (uniq_b_m5 < 22 or uniq_b_m5 < int(max(1, uniq_s_m5) * _req_s2_uniq_ratio)):
             return (
                 False,
                 f"MODUS #51 (Pembeli Unik Terlalu Sempit Tanpa Modal Dev): Hanya {uniq_b_m5} pembeli unik vs {uniq_s_m5} penjual "
@@ -3064,6 +3252,8 @@ def evaluate_market_candidate(
         "heavy_dev_capital_proofs": heavy_dev_cap_reasons,
         "bonding_curve_pct": float(c_cfg.get("bonding_curve_pct") or 0.0),
         "wall_absorption_breakout": bool(c_cfg.get("wall_absorption_breakout")),
+        "is_lazarus_cto_revival_gateway": bool(c_cfg.get("is_lazarus_cto_revival_gateway")),
+        "is_sovereign_steady_climber_gateway": bool(c_cfg.get("is_sovereign_steady_climber_gateway")),
     }
 
 
@@ -5396,7 +5586,11 @@ def analyze_holders_and_lp_lock(
 
     has_fortress_primary_lock = (
         primary_lp_locked_pct >= 95.0
-        and primary_locked_usd >= max(25_000.0, mc_usd * 0.08)
+        and (
+            primary_locked_usd >= max(25_000.0, mc_usd * 0.08)
+            or primary_locked_usd >= 100_000.0
+            or (mc_usd >= 1_000_000.0 and primary_locked_usd >= 75_000.0)
+        )
     )
     if total_unlocked_usd > 15_000.0 and total_unlocked_usd > total_locked_usd and not has_fortress_primary_lock:
         return (
@@ -7282,6 +7476,8 @@ def evaluate_ohlcv_ath_trap(
     is_verified_cto: bool = False,
     has_heavy_dev_capital: bool = False,
     is_dormant_whale_coil: bool = False,
+    is_lazarus_cto_revival_gateway: bool = False,
+    is_sovereign_steady_climber_gateway: bool = False,
 ) -> tuple[bool, str, dict]:
     """
     PERISAI V2.7B + V2.8A/B (OHLCV MICROSTRUCTURE, ANTI WASH-PEG BOT, & REAL ATH GUARD):
@@ -7662,6 +7858,8 @@ def evaluate_ohlcv_ath_trap(
             ):
                 is_confirmed_multiday_floor_rebound = True
 
+    if is_lazarus_cto_revival_gateway or is_sovereign_steady_climber_gateway:
+        allow_cto_reclaim_ath = True
     allow_wave2_reclaim_ath = (is_wave2_staircase_reclaim and est_ath_mc <= 320_000.0 and ath_drawdown_pct <= 70.0) or allow_cto_reclaim_ath
     if age_minutes <= 1440.0 and ath_drawdown_pct >= 42.0 and not allow_wave2_reclaim_ath:
         return (
@@ -8794,9 +8992,11 @@ def audit_and_dispatch_candidate(
         mc,
         cand_age_mins,
         is_hyper_wave1=bool(metrics.get("is_hyper_wave1")),
-        is_verified_cto=_pre_cto_flag,
+        is_verified_cto=_pre_cto_flag or bool(metrics.get("is_lazarus_cto_revival_gateway")),
         has_heavy_dev_capital=has_heavy_dev_cap_s2,
         is_dormant_whale_coil=bool(metrics.get("is_dormant_whale_coil")),
+        is_lazarus_cto_revival_gateway=bool(metrics.get("is_lazarus_cto_revival_gateway")),
+        is_sovereign_steady_climber_gateway=bool(metrics.get("is_sovereign_steady_climber_gateway")),
     )
     if not ath_ok:
         return {
@@ -8966,7 +9166,30 @@ def audit_and_dispatch_candidate(
         rt_loss_pct = float(rt_res["rt_loss_pct"])
         depth_loss_pct = float(rt_res.get("depth_loss_pct", rt_loss_pct))
         _s2_quote_addr = str((best_pair.get("quoteToken") or {}).get("address") or "").strip()
+        _s2_quote_sym = str((best_pair.get("quoteToken") or {}).get("symbol") or "").strip()
         _s2_is_eco_quote = bool(_s2_quote_addr and _s2_quote_addr != SOL_MINT and _s2_quote_addr in HARD_QUOTE_MINTS)
+        # V8.5 MODUS #64: Anti-Synthetic Quote Slippage Guard (Kasus koin $AMD / token sekuritas non-SOL):
+        # Jika pasangan kuotasi utama bukan SOL murni/USDC dan bukan Hard Quote resmi, wajib memastikan
+        # bahwa kolam cadangan SOL murni minimal $10,000 agar eksekusi trader mikro tidak tercekik slippage!
+        if (
+            not is_evm_chain
+            and _s2_quote_addr
+            and _s2_quote_addr != SOL_MINT
+            and _s2_quote_addr not in HARD_QUOTE_MINTS
+        ):
+            has_sufficient_native_sol_lp = any(
+                str((p.get("quoteToken") or {}).get("address") or "") == SOL_MINT
+                and float((p.get("liquidity") or {}).get("usd") or 0.0) >= 10_000.0
+                for p in (pairs or [])
+            )
+            if not has_sufficient_native_sol_lp:
+                return {
+                    "token": f"{name} (${symbol})",
+                    "mint": mint,
+                    "verdict": "SKIP",
+                    "reason": f"MODUS #64 (Jebakan Pasangan Sintetik Non-SOL): Pasangan utama {_s2_quote_sym} tanpa kolam SOL murni memadai (< $10k SOL LP) -> Rawan slippage ekstrem!"
+                }
+
         _s2_tok22_tax = float(holder_meta.get("verified_tok22_tax_pct") or 0.0)
         _eff_max_rt_loss = min(
             7.8,
@@ -9004,7 +9227,12 @@ def audit_and_dispatch_candidate(
         if cand_age_mins > 180.0 and mc < 1_060_000.0:
             s2_creator_pct = float(holder_meta.get("creator_pct") or 0.0)
             s2_burned_pct = float(holder_meta.get("burned_pct") or 0.0)
-            req_s2_holders = 600 if mc < 215_000.0 else 800
+            if metrics.get("is_lazarus_cto_revival_gateway"):
+                req_s2_holders = 180
+            elif metrics.get("is_sovereign_steady_climber_gateway"):
+                req_s2_holders = 350
+            else:
+                req_s2_holders = 600 if mc < 215_000.0 else 800
             if s2_creator_pct > 0.25:
                 return {
                     "token": f"{name} (${symbol})",
@@ -9361,6 +9589,9 @@ def audit_and_dispatch_candidate(
 
     dex_url, swap_label, swap_url = _get_chain_links(chain_id, mint)
     dna_reasons_txt = _esc_md(" · ".join(dna_meta.get("continuation_reasons", [])))
+    if metrics.get("dormant_coil_badge"):
+        dorm_bdg = _esc_md(str(metrics["dormant_coil_badge"]))
+        dna_reasons_txt = f"{dorm_bdg} · {dna_reasons_txt}" if dna_reasons_txt else dorm_bdg
     pre_bot_txt = _esc_md(" + ".join(dna_meta.get("pre_bot_edges", [])))
     _std_tax = max(float(holder_meta.get("buy_tax_pct") or 0.0), float(holder_meta.get("sell_tax_pct") or 0.0))
     stealth_plan = compute_stealth_anti_shakeout_plan(
@@ -9385,7 +9616,7 @@ def audit_and_dispatch_candidate(
             police_badges_s2 = list(metrics["crypto_police_badges"])
 
     if dna_meta.get("is_pre_bot_frontrun") and not _is_selangkah_bot_alert_enabled(config):
-        if not is_police_hot_s2:
+        if not is_police_hot_s2 and not metrics.get("is_lazarus_cto_revival_gateway") and not metrics.get("is_sovereign_steady_climber_gateway"):
             return {
                 "token": f"{safe_name} (${safe_symbol})",
                 "mint": mint,
@@ -9420,7 +9651,13 @@ def audit_and_dispatch_candidate(
                 f"`30%` di `${runner_tp2_mc:,.0f}`, & biarkan `20% Moonbag` kawal lari `+300%+` ke `${runner_tp3_mc:,.0f}+`!\n"
             )
 
-    if use_police_hot_header:
+    if bool(metrics.get("is_dormant_whale_coil")):
+        header_title = f"🚓⚡ *[POLISI KRIPTO — PREDIKSI PRA-TERBANG KOIN LAMA ({chain_id.upper()} V7.4)]*"
+        out_alert_title = "POLISI KRIPTO DETEKSI DINI"
+    elif metrics.get("is_lazarus_cto_revival_gateway"):
+        header_title = f"👑🔥 *[JALUR KEBANGKITAN KOMUNITAS — LAZARUS CTO REVIVAL ({chain_id.upper()} V8.6)]*"
+        out_alert_title = "KEBANGKITAN KOMUNITAS (LAZARUS CTO)"
+    elif use_police_hot_header:
         if is_track1_dev_hostage:
             header_title = f"🚓🔥 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT · TRACK 1: DEV TERSANDERA MODAL ({chain_id.upper()} V7.5)]*"
         elif is_track2_cto_relay:
@@ -9429,49 +9666,44 @@ def audit_and_dispatch_candidate(
             header_title = f"🚓🛡️ *[POLISI KRIPTO — TRACK 3: HIGH-CONVICTION CLEAN-LAUNCH ANCHOR ({chain_id.upper()} V8.1)]*"
         else:
             header_title = f"🚓🔥 *[POLISI KRIPTO — DETEKSI DINI KOIN HANGAT ({chain_id.upper()} V7.5)]*"
+        out_alert_title = "POLISI KRIPTO DETEKSI DINI"
+    elif metrics.get("is_sovereign_steady_climber_gateway"):
+        header_title = f"🧱📈 *[JALUR KENAIKAN PELAN ORGANIK — SOVEREIGN STEADY CLIMBER ({chain_id.upper()} V8.6)]*"
+        out_alert_title = "KENAIKAN PELAN ORGANIK (STEADY CULT STAIRCASE)"
     else:
-        header_title = (
-            f"⚡ *[SELANGKAH DI DEPAN BOT — {chain_id.upper()} OMNI-STAGE V6.0]*"
-            if dna_meta.get("is_pre_bot_frontrun")
-            else f"🎯 *[CORRIDOR SNIPER V6.0: UNIFIED FIRST-PRINCIPLES & 48-MODUS ({chain_id.upper()})]*"
-        )
-    police_badge_txt = _esc_md(" · ".join(police_badges_s2[:2])) if use_police_hot_header else ""
-    pre_bot_line = (
-        f"🚓 *Bukti Interogasi Dual-Track:* `{police_badge_txt}`\n"
-        if use_police_hot_header and police_badge_txt
-        else (f"⚡ *Posisi Front-Run:* `{pre_bot_txt}`\n" if pre_bot_txt else "")
-    )
-    sub100k_txt = _esc_md(" · ".join(sub100k_meta.get("deterrence_proofs", [])))
-    sub100k_line = f"🔒 *Fisika Tembus $100K:* `{sub100k_txt}`\n" if sub100k_meta.get("is_sub100k_verified") and sub100k_txt else ""
+        if bool(metrics.get("is_pre_grad_curve")):
+            header_title = f"⚡ *[SELANGKAH DI DEPAN BOT — Pre-DEX Kurva Bonding ({chain_id.upper()} V6.0)]*"
+        elif int(metrics.get("corridor_id", 0)) == 0 and dna_meta.get("is_pre_bot_frontrun"):
+            header_title = f"⚡ *[SELANGKAH DI DEPAN BOT — Skor Tembus $100K ({chain_id.upper()} V6.0)]*"
+        else:
+            header_title = (
+                f"⚡ *[SELANGKAH DI DEPAN BOT — {chain_id.upper()} OMNI-STAGE V6.0]*"
+                if dna_meta.get("is_pre_bot_frontrun")
+                else f"🎯 *[CORRIDOR SNIPER V6.0: UNIFIED FIRST-PRINCIPLES & 48-MODUS ({chain_id.upper()})]*"
+            )
+        out_alert_title = "CORRIDOR SNIPER V5.0"
 
     alert_msg = (
         f"{header_title}\n\n"
-        f"🪙 *Token:* {safe_name} (`${safe_symbol}`) · *Chain:* `{chain_id.upper()}`\n"
-        f"📍 *Kontrak:* `{mint}`\n"
-        f"🛤️ *Posisi:* `{metrics['corridor_name']}`\n"
-        f"{pre_bot_line}"
-        f"🧬 *Alasan Potensi Naik:* `{dna_reasons_txt}`\n"
-        f"{sub100k_line}\n"
-        f"💰 *MC Live On-Chain:* `${live_mc:,.0f}` *(Drift vs DEX: {live_drift_pct:+.1f}%)*\n"
+        f"🪙 *Token:* {safe_name} (`${safe_symbol}`)\n"
+        f"📍 *Mint:* `{mint}`\n\n"
+        f"💰 *MC Spot Live:* `${live_mc:,.0f}` *(Drift: {live_drift_pct:+.1f}%)*\n"
         f"⏱️ *Est. MC Saat Anda Klik (~{int(PIPELINE_REACTION_DELAY_SEC)}d):* `${projected_entry_mc:,.0f}`\n"
-        f"🚧 *BATAS MAKSIMAL BOLEH BELI:* `${max_safe_entry_mc:,.0f}` *(Lewat ini = JANGAN BELI!)*\n"
-        f"🎯 *Target Take-Profit Aman:* `${tp_mc:,.0f}` *(Est. Untung Bersih +{net_from_projected_pct}%)*\n"
+        f"🎯 *TARGET TP STRUCTURAL:* `${tp_mc:,.0f}` *(+{net_from_projected_pct}% Untung Bersih Pasca-Delay)*\n"
+        f"🚧 *BATAS MAKSIMAL BOLEH BELI:* `${max_safe_entry_mc:,.0f}`\n"
+        f"🛡️ *Batas Cut Loss Aman:* `{cut_loss}%` (MC `${float(metrics.get('target_tp_mc', tp_mc)) * (1.0 - (cut_loss/100.0)):,.0f}`)\n\n"
         f"{moonbag_note}"
-        f"🕵️ *Eksekusi Siluman (Anti-Radar Dev):* Pecah `2x` (`50%` masuk + `50%` limit `${stealth_plan['dip_limit_mc']:,.0f}`) · Maks `${stealth_plan['stealth_clip_usd']}`/tx\n"
-        f"🧱 *SL Struktural Anti-Hunt:* `${stealth_plan['structural_sl_mc']:,.0f}` (`-{stealth_plan['structural_sl_pct']}%` bawah lantai Paus) · `{stealth_plan['mev_guard_label']}` (Slippage `<={stealth_plan['max_slippage_pct']}%`)\n\n"
-        f"🔄 *Uji Jual & Keamanan ({chain_id.upper()}):* `LOLOS` (Friksi `{rt_loss_pct}%` | Depth `{depth_loss_pct}%`)\n"
-        f"⚡ *Nafas Baru:* 5m `+{metrics['price_change_m5']}%` | Akselerasi `{metrics['accel_ratio']}x`\n"
-        f"📊 *Orderflow M5:* `{buys_m5} Buy` vs `{sells_m5} Sell` (`{metrics['buy_sell_ratio']}x` | CVD `+{metrics['cvd_ratio']}%`)\n"
-        f"💧 *Likuiditas:* `${liq:,.0f}` ({_esc_md(dex_id.title())} | Kunci LP `{holder_meta['lp_locked_pct']}%`)\n"
-        f"👥 *Pure Top 10:* `{holder_meta['pure_top10']}%` | *Saldo Dev:* `{holder_meta['creator_pct']}%`\n\n"
-        f"🔗 *DexScreener:* [Lihat Chart]({dex_url})\n"
+        f"🔄 *Uji Jual 0.1 & 1.0 SOL:* `LOLOS` (Friksi `{rt_loss_pct}%` | Depth 1 SOL `{depth_loss_pct}%`)\n"
+        f"📈 *Momentum Skor:* `{metrics.get('score', 85)}/100` | M5 `+{metrics.get('price_change_m5', 0.0)}%` | Usia `{metrics.get('age_minutes', cand_age_mins)}m`\n"
+        f"📊 *Orderflow:* Buy `{buys_m5}` vs Sell `{sells_m5}` (`{metrics.get('buy_sell_ratio', 1.0)}x` | CVD `{metrics.get('cvd_ratio', 0.0)}%`)\n"
+        f"💧 *Likuiditas:* `${liq:,.0f}` (`{metrics.get('liq_mc_ratio', 0.0)}%` MC | Lock `{holder_meta.get('lp_locked_pct', 0.0)}%`)\n"
+        f"👥 *Suplai Holder:* Dev `{holder_meta.get('creator_pct', 0.0)}%` | Top 10 `{holder_meta.get('top10_pct', 0.0)}%` | Holders `{holder_meta.get('total_holders', 0)}`\n\n"
+        f"🧬 *Alasan Lolos:* {dna_reasons_txt}\n"
+        f"🔗 *DexScreener ({chain_id.upper()}):* [Lihat Chart]({dex_url})\n"
         f"⚡ *{swap_label}:* [Eksekusi Cepat]({swap_url})"
     )
-
     bot_tok = getattr(config, "TELEGRAM_BOT_TOKEN", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")
     chat_id = getattr(config, "TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
-    out_alert_title = "POLISI KRIPTO DETEKSI DINI" if use_police_hot_header else "CORRIDOR SNIPER V5.0"
-
     sent, detail = send_telegram_direct(bot_tok, chat_id, alert_msg)
     if sent:
         _mark_corridor_alerted(mint, int(metrics.get("corridor_id", 0)))
@@ -9542,9 +9774,13 @@ def _select_dual_track_candidate(
     std_final_reason = std_reason
     if std_ok and enable_selangkah_bot is False:
         is_likely_pre_bot = bool(
-            mc <= 260_000.0
-            or bool(best_pair.get("is_bonding_curve_pre_grad"))
-            or (pair_count >= 2 and mc <= 340_000.0)
+            (
+                mc <= 260_000.0
+                or bool(best_pair.get("is_bonding_curve_pre_grad"))
+                or (pair_count >= 2 and mc <= 340_000.0)
+            )
+            and not bool(std_metrics.get("is_lazarus_cto_revival_gateway"))
+            and not bool(std_metrics.get("is_sovereign_steady_climber_gateway"))
         )
         if is_likely_pre_bot:
             ok_police_hot, police_badges = _evaluate_crypto_police_early_hot_runner(
