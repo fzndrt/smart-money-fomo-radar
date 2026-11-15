@@ -475,6 +475,14 @@ def _extract_jup_pool_intel(pool_node: dict, stage_tag: str = "dex") -> tuple[st
         "price_usd": price_usd,
         "holder_count": holders,
         "organic_score": round(org_score, 1),
+        "organic_score_label": str(ba.get("organicScoreLabel") or "").strip().lower(),
+        "has_organic_telemetry": bool(
+            ("organicScore" in ba)
+            or ("organicScoreLabel" in ba)
+            or ("buyOrganicVolume" in st5)
+            or ("buyOrganicVolume" in st1h)
+            or ("buyOrganicVolume" in st6h)
+        ),
         "created_ms": created_ms,
         "birth_ms": birth_ms,
         "buys_m5": int(st5.get("numBuys") or 0),
@@ -847,6 +855,22 @@ def _evaluate_1m_chart_police_guard(
 
     if max_h_1m > 0.0 and (eff_cur_1m >= (max_h_1m * 0.88) or is_post_flush_1m_v_reclaim or is_active_green_1m_surge) and last_c_1m >= (last_o_1m * 0.985):
         meta["is_clean_1m_staircase"] = True
+
+    # V10.3 MODUS #76B (Memori Jarum Bantingan 1-Menit):
+    # Pada koin >14 menit (<$1.08M), deteksi jarum flash-slam >= -42% dalam 1 menit di 30 bar terakhir (walau >6m lalu).
+    if float(age_minutes or 0.0) > 14.0 and 0.0 < live_mc < 1_080_000.0 and len(c1m_valid) >= 8 and not is_post_flush_1m_v_reclaim:
+        for hist_1m in c1m_valid[:-2]:
+            hb = float(hist_1m.get("high") or 0.0)
+            lb = float(hist_1m.get("low") or 0.0)
+            cb = float(hist_1m.get("close") or 0.0)
+            if hb >= 30_000.0 and lb > 0.0 and lb <= (hb * 0.58) and cb <= (hb * 0.72):
+                hist_drop_pct = ((hb - lb) / hb) * 100.0
+                return (
+                    False,
+                    f"MODUS #76B (Memori Bantingan Uji-Rug 1m): Terdeteksi jarum bantingan -{hist_drop_pct:.1f}% pada riwayat 1-menit "
+                    f"(${hb:,.0f} -> ${lb:,.0f}) sebelum wash-pump lanjutan -> Rawan rug lanjutan!",
+                    meta,
+                )
     return True, "Grafik 1m sehat", meta
 
 
@@ -1164,17 +1188,19 @@ def _is_early_graduation_breakout_candidate(
     liq_usd: float = 0.0,
 ) -> tuple[bool, dict]:
     """
-    V10.2 MODUS #74/#75 — EARLY GRADUATION BREAKOUT, PRE-GRAD COOKER, & LOW-MC IGNITION (< $120K):
+    V10.3 MODUS #74/#75/#76D — EARLY GRADUATION BREAKOUT, PRE-GRAD COOKER, GRADUATED COIL & LOW-MC IGNITION (< $120K):
     Menangkap koin potensial sedini mungkin di bawah MC $120K ($20K-$118K) sebelum lonjakan ratusan-ribuan persen:
       1. Standard Early Breakout (M5 +5%..+75%) pada kurva pre-grad (LP >= $6.5K), low-MC <$45K (LP >= $9.5K),
          <$86K (LP >= $11.5K), dan clean absorption $86K-$118K (LP >= $16.5K & >=15% MC, Dev <=0.15%, Sniper <6%, Holder >=180).
       2. Low-MC Clean Ignition ($PEACEFROG pattern): $20K-$62K, <=60m, M5 +75%..+185%, Dev <=0.15%, Bot <24%, Holders >=100.
       3. Pre-Grad Pressure Cooker ($tinfoil 04:00 pattern): Kurva bonding 72%-99.9%, $20K-$58K, LP >= $6.5K, jeda rapat
          -8%..+5% pasca dorongan H1 >=+12% atau Vol1j kuat dengan dominasi beli >=1.12x / USD >=1.15x sebelum lilin graduasi!
+      4. V10.3 Graduated Early Dip-Absorption Coil (`grad_early_coil_eb`): Lulus DEX $24K-$78K pasca-koreksi sejenak
+         M5 -4.0%..+4.9%, Dev <=0.20%, Sniper <6%, Bundle <5%, Holders >=120, Organic >=48, Arus Beli USD >=1.22x sebelum Leg-2!
     """
     if not isinstance(best_pair, dict):
         return False, {}
-    if not (20_000.0 <= mc_usd <= 118_000.0 and age_minutes <= 120.0):
+    if not (20_000.0 <= mc_usd <= 118_000.0 and age_minutes <= 180.0):
         return False, {}
 
     ji = best_pair.get("jup_intel") if isinstance(best_pair.get("jup_intel"), dict) else {}
@@ -1201,9 +1227,24 @@ def _is_early_graduation_breakout_candidate(
     insider_pct = float(ji.get("insider_pct") or 0.0)
     bundle_pct = float(ji.get("bundle_hold_pct") or 0.0)
     bot_pct = float(ji.get("bot_holders_pct") or 0.0)
+    org_sc = float(ji.get("organic_score") or 0.0)
     h_cnt = int(ji.get("holder_count") or 0)
     if bot_pct > 35.0:
         return False, {}
+
+    # Untuk koin 120m-180m (< $118K), wajib terverifikasi sangat bersih (Dev <= 0.15%, LP >= $14K, Holders >= 220, Org >= 55)
+    if age_minutes > 120.0:
+        if not (
+            not is_pre_grad
+            and eff_liq >= 14_000.0
+            and dev_bal <= 0.15
+            and sniper_pct < 6.0
+            and bundle_pct < 5.0
+            and insider_pct < 3.5
+            and org_sc >= 55.0
+            and h_cnt >= 220
+        ):
+            return False, {}
 
     if mc_usd > 86_000.0:
         if dev_bal > 0.15 or sniper_pct >= 6.0 or bundle_pct >= 5.0 or insider_pct >= 4.0:
@@ -1273,7 +1314,26 @@ def _is_early_graduation_breakout_candidate(
         and (b_m5 / float(max(1, s_m5))) >= 1.12
         and b_usd_5m >= max(2_600.0, (s_usd_5m * 1.15) if s_usd_5m > 0.0 else 0.0)
     )
-    if not (std_eb_ok or low_cap_ignition_eb or pre_grad_cooker_eb):
+    grad_early_coil_eb = bool(
+        not is_pre_grad
+        and age_minutes <= 75.0
+        and (24_000.0 <= mc_usd <= 78_000.0)
+        and ((eff_liq / max(1.0, mc_usd)) * 100.0) >= 15.0
+        and (-4.0 <= p_m5 < 5.0)
+        and (p_h1 >= 15.0 or vol_h1 >= max(24_000.0, mc_usd * 0.60))
+        and dev_bal <= 0.20
+        and sniper_pct < 6.0
+        and insider_pct < 4.0
+        and bundle_pct < 5.0
+        and bot_pct < 24.0
+        and org_sc >= 48.0
+        and h_cnt >= 120
+        and tot_m5 >= 20
+        and b_m5 > s_m5
+        and (b_m5 / float(max(1, s_m5))) >= 1.15
+        and b_usd_5m >= max(3_500.0, (s_usd_5m * 1.22) if s_usd_5m > 0.0 else 0.0)
+    )
+    if not (std_eb_ok or low_cap_ignition_eb or pre_grad_cooker_eb or grad_early_coil_eb):
         return False, {}
 
     is_post_flush_reclaim_eb = bool(
@@ -1289,6 +1349,7 @@ def _is_early_graduation_breakout_candidate(
         "is_early_graduation_breakout": True,
         "is_low_cap_ignition_eb": low_cap_ignition_eb,
         "is_pre_grad_cooker_eb": pre_grad_cooker_eb,
+        "is_grad_early_coil_eb": grad_early_coil_eb,
         "badge": f"Early Graduation Breakout ({p_m5:+.1f}% M5 · Beli USD {usd_mult:.2f}x · MC ${mc_usd:,.0f})",
     }
 
@@ -2570,6 +2631,46 @@ def evaluate_jup_onchain_intel_shield(
     cons_ok, cons_reason = _verify_bundler_supply_conservation(best_pair, mc_usd, age_minutes=age_jup_m)
     if not cons_ok:
         return False, cons_reason
+
+    # V10.3 MODUS #76A (Spoofed Organic / Botnet Wash Volume Shield — Kasus $SOLCAPS):
+    # Bot pencuci volume sering menyebar transfer ke ratusan dompet baru sehingga `botHoldersPercentage` tampak 0.01%,
+    # padahal `organicScore` ~ 0 & `buyOrganicVolume` < 2-8% dari total `buyVolume` (mis. $4.6K organik dari $241K total).
+    if not has_heavy_dev_capital and mc_usd < 1_080_000.0:
+        _has_org_sc_key = ("organic_score" in jup_intel) or bool(jup_intel.get("has_organic_telemetry"))
+        _org_sc_val = float(jup_intel.get("organic_score") or 0.0)
+        _b_vol_h1 = float(jup_intel.get("buy_vol_h1") or 0.0)
+        _b_org_h1 = float(jup_intel.get("buy_organic_vol_h1") or 0.0)
+        _b_org_5m = float(jup_intel.get("buy_organic_vol_m5") or 0.0)
+        _has_org_vol_h1_key = ("buy_organic_vol_h1" in jup_intel) or bool(jup_intel.get("has_organic_telemetry"))
+        _has_org_vol_m5_key = ("buy_organic_vol_m5" in jup_intel) or bool(jup_intel.get("has_organic_telemetry"))
+        if _has_org_sc_key and _has_org_vol_h1_key and _b_vol_h1 >= 60_000.0 and _org_sc_val < 25.0:
+            _org_share_h1 = (_b_org_h1 / _b_vol_h1) * 100.0
+            if _org_share_h1 < 8.0:
+                return (
+                    False,
+                    f"MODUS #76A (Volume Cuci Botnet / Organik Palsu H1): Dari ${_b_vol_h1:,.0f} beli 1j hanya "
+                    f"${_b_org_h1:,.0f} ({_org_share_h1:.1f}%) yang organik (OrganicScore {_org_sc_val:.1f} < 25) -> Jebakan wash-pump!",
+                )
+        if _has_org_sc_key and _has_org_vol_m5_key and b_vol_5m >= 22_000.0 and _org_sc_val < 22.0:
+            _org_share_5m = (_b_org_5m / max(1.0, b_vol_5m)) * 100.0
+            if _org_share_5m < 6.0:
+                return (
+                    False,
+                    f"MODUS #76A (Lonjakan Cuci Botnet 5m): Dari ${b_vol_5m:,.0f} beli 5m hanya "
+                    f"${_b_org_5m:,.0f} ({_org_share_5m:.1f}%) yang organik (OrganicScore {_org_sc_val:.1f}) -> Wash volume semu!",
+                )
+        if (
+            bool(jup_intel.get("icon_reused"))
+            and int(jup_intel.get("bundle_count") or 0) >= 5
+            and _has_org_sc_key
+            and _org_sc_val < 35.0
+        ):
+            return (
+                False,
+                f"MODUS #76A (Stempel Pabrik Daur Ulang + Multi-Bundle): Ikon daur ulang dengan {int(jup_intel.get('bundle_count') or 0)} bundle "
+                f"& OrganicScore rendah ({_org_sc_val:.1f}) tanpa modal dev -> Rawan rug pull!",
+            )
+
     return True, "Telemetri USD & Audit Jupiter Bersih"
 
 
@@ -3758,7 +3859,15 @@ def evaluate_market_candidate(
             if is_base_awakening_ignition or _is_trap_rev_s1 or _is_pre_pump_s1 or bool(c_cfg.get("is_lazarus_cto_revival_gateway")) or bool(c_cfg.get("is_sovereign_steady_climber_gateway")) or bool(c_cfg.get("is_multipool_mev_velocity_gateway")):
                 max_age_mins = 525_600.0
             else:
-                max_age_mins = 120.0 if _is_early_breakout_s1 else (180.0 if (cum_tx_24h >= 1200 and liq >= 18_000.0) else 90.0)
+                _is_eb_clean_slow = bool(
+                    _is_early_breakout_s1
+                    and liq >= 14_000.0
+                    and _jup_s1
+                    and float(_jup_s1.get("organic_score") or 0.0) >= 55.0
+                    and float(_jup_s1.get("dev_bal_pct") or 0.0) <= 0.15
+                    and int(_jup_s1.get("holder_count") or 0) >= 220
+                )
+                max_age_mins = 180.0 if _is_eb_clean_slow else (120.0 if _is_early_breakout_s1 else (180.0 if (cum_tx_24h >= 1200 and liq >= 18_000.0) else 90.0))
             if age_minutes > max_age_mins:
                 return (
                     False,
@@ -3999,6 +4108,8 @@ def evaluate_market_candidate(
 
     if _early_breakout_meta_s1.get("is_pre_grad_cooker_eb"):
         min_p_m5 = -8.0
+    elif _early_breakout_meta_s1.get("is_grad_early_coil_eb"):
+        min_p_m5 = -4.0
     elif _is_pre_pump_s1:
         min_p_m5 = 1.0
     elif _is_trap_rev_s1:
@@ -4069,7 +4180,15 @@ def evaluate_market_candidate(
         and bs_h1_pre >= 1.12
         and bs_m5_pre >= 1.35
     )
-    _is_early_reclaim_eb_s1 = bool(_is_early_breakout_s1 and (p_m5 >= 8.0 or _early_breakout_meta_s1.get("is_pre_grad_cooker_eb")) and age_minutes <= 90.0)
+    _is_early_reclaim_eb_s1 = bool(
+        _is_early_breakout_s1
+        and (
+            p_m5 >= 8.0
+            or _early_breakout_meta_s1.get("is_pre_grad_cooker_eb")
+            or _early_breakout_meta_s1.get("is_grad_early_coil_eb")
+        )
+        and age_minutes <= 90.0
+    )
 
     if (
         p_h1 <= 0.0
@@ -4389,7 +4508,7 @@ def evaluate_market_candidate(
         and p_h1 < 14.0
         and not is_wave2_v_reclaim
         and not _is_trap_rev_s1
-        and not (_is_early_breakout_s1 and (p_m5 >= 8.0 or _early_breakout_meta_s1.get("is_pre_grad_cooker_eb")) and _j_b5 >= (_j_s5 * 1.15))
+        and not (_is_early_breakout_s1 and (p_m5 >= 8.0 or _early_breakout_meta_s1.get("is_pre_grad_cooker_eb") or _early_breakout_meta_s1.get("is_grad_early_coil_eb")) and _j_b5 >= (_j_s5 * 1.15))
     ):
         return (
             False,
@@ -4433,7 +4552,7 @@ def evaluate_market_candidate(
     accel_ratio = vol_rate_m5 / max(1.0, vol_rate_h1)
     if bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
         min_accel = 0.15
-    elif bool(c_cfg.get("is_lazarus_cto_revival_gateway")) or is_seasoned_cult_early_awakening or _is_clean_crowd_coil_s1 or _is_pre_pump_s1 or _is_trap_rev_s1 or (_is_early_breakout_s1 and (p_m5 >= 5.0 or _early_breakout_meta_s1.get("is_pre_grad_cooker_eb")) and _j_b5 >= (_j_s5 * 1.15)):
+    elif bool(c_cfg.get("is_lazarus_cto_revival_gateway")) or is_seasoned_cult_early_awakening or _is_clean_crowd_coil_s1 or _is_pre_pump_s1 or _is_trap_rev_s1 or (_is_early_breakout_s1 and (p_m5 >= 5.0 or _early_breakout_meta_s1.get("is_pre_grad_cooker_eb") or _early_breakout_meta_s1.get("is_grad_early_coil_eb")) and _j_b5 >= (_j_s5 * 1.15)):
         min_accel = 0.25
     elif (is_post_graduation_bull_flag and p_m5 >= 4.5 and buy_sell_ratio_m5 >= 1.28) or (
         is_verified_cto_bull_flag and p_m5 >= 2.5 and buy_sell_ratio_m5 >= 1.28
@@ -4584,9 +4703,19 @@ def evaluate_market_candidate(
                 f"Terdeteksi Botnet Micro-Order H1: Tiket 1 jam hanya ${avg_ticket_h1:.1f} (< ${min_ticket_h1:.1f} dari {total_h1} tx)",
                 {}
             )
-    # Pada koin viral ekspansif (p_h1 >= +55% & B/S H1 >= 1.18x seperti $Foxii 16,448 tx/jam), ribuan ritel Axiom/BullX
-    # membeli klip 0.1-0.2 SOL (~$18-$30); botnet pencuci $Leonida mencuci di tempat (p_h1 rendah / B/S timpang).
-    if total_h1 >= 1200 and tx_per_1k_liq_h1 > 220.0 and avg_ticket_h1 < 35.0 and not (p_h1 >= 55.0 and avg_ticket_h1 >= 18.0 and buy_sell_ratio_h1 >= 1.18):
+    # Pada koin viral ekspansif (p_h1 >= +55% & B/S H1 >= 1.18x seperti $Foxii), ribuan ritel membeli klip ~$18-$30;
+    # namun bila OrganicScore rendah (<35) atau spam ekstem tanpa modal dev (>8K tx & >500 tx/$1k LP, org <55), tetap tolak sebagai botnet cuci volume ($SOLCAPS)!
+    _has_low_org_h1_spam = bool(
+        _jup_s1
+        and ("organic_score" in _jup_s1 or "buy_organic_vol_h1" in _jup_s1)
+        and (
+            float(_jup_s1.get("organic_score") or 0.0) < 35.0
+            or (total_h1 >= 8_000 and tx_per_1k_liq_h1 > 500.0 and not has_heavy_dev_cap and float(_jup_s1.get("organic_score") or 0.0) < 55.0)
+        )
+    )
+    if total_h1 >= 1200 and tx_per_1k_liq_h1 > 220.0 and avg_ticket_h1 < 35.0 and (
+        _has_low_org_h1_spam or not (p_h1 >= 55.0 and avg_ticket_h1 >= 18.0 and buy_sell_ratio_h1 >= 1.18)
+    ):
         return (
             False,
             f"Terdeteksi Spam Frekuensi Botnet H1: {total_h1} tx/jam pada LP ${liq:,.0f} ({tx_per_1k_liq_h1:.0f} tx/$1k LP)",
@@ -4686,13 +4815,36 @@ def evaluate_market_candidate(
         (_j_b5 >= 20_000.0 and (_j_ob5_s1 / max(1.0, _j_b5)) < 0.08)
         or (_j_b1_s1 >= 80_000.0 and (_j_ob1_s1 / max(1.0, _j_b1_s1)) < 0.06)
     )
+    _is_mid_parabolic_low_org = bool(
+        not has_heavy_dev_cap
+        and not _is_trap_rev_s1
+        and not _is_pre_pump_s1
+        and 120_000.0 <= mc < 275_000.0
+        and 15.0 < age_minutes <= 240.0
+        and p_h1 >= 260.0
+        and p_m5 >= 14.0
+        and (
+            _is_low_organic_intraday_pump
+            or (_jup_s1 and ("organic_score" in _jup_s1) and float(_jup_s1.get("organic_score") or 0.0) < 50.0)
+            or (
+                p_h1 >= 360.0
+                and p_m5 >= 18.0
+                and (
+                    not _jup_s1
+                    or float(_jup_s1.get("organic_score") or 0.0) < 62.0
+                    or int(_jup_s1.get("holder_count") or 0) < 650
+                )
+            )
+        )
+    )
     if (
         not is_cto_multi_day_breakout
         and not is_verified_mature_cult
         and not bool(c_cfg.get("is_sovereign_steady_climber_gateway"))
         and age_minutes <= 240.0
         and (
-            (275_000.0 <= mc <= 490_000.0 and p_h1 >= 220.0 and p_m5 >= 18.0)
+            _is_mid_parabolic_low_org
+            or (275_000.0 <= mc <= 490_000.0 and p_h1 >= 220.0 and p_m5 >= 18.0)
             or (mc >= 280_000.0 and p_h1 >= 220.0 and p_m5 >= 24.0 and (accel_ratio < 1.25 or _is_low_organic_intraday_pump or bool(c_cfg.get("is_wall_absorption_override"))))
             or (mc >= 380_000.0 and p_h1 >= 320.0 and p_m5 >= 14.0 and (accel_ratio < 1.25 or _is_low_organic_intraday_pump or bool(c_cfg.get("is_wall_absorption_override"))))
         )
@@ -9847,6 +9999,34 @@ def evaluate_ohlcv_ath_trap(
                         {"ath_drawdown_pct": round(wick_slam_pct, 1)}
                     )
 
+        # V10.3 MODUS #76B: Memori Jarum Bantingan Uji-Rug Mid-Run 5m (10 bar terakhir / ~50 menit)
+        # Kasus $SOLCAPS: jam 00:50 WIB dibanting -58% dalam 1 candle lalu di-wash pump 20m lagi ke puncak baru sebelum rug!
+        if (
+            not is_15m_or_higher_tf
+            and 14.0 < age_minutes <= 240.0
+            and len(valid_candles) >= 5
+            and not has_heavy_dev_capital
+            and not is_verified_cto
+            and not is_scalper_trap_reversal
+            and not is_wave2_staircase_reclaim
+            and not is_lazarus_cto_revival_gateway
+            and not is_sovereign_steady_climber_gateway
+            and not is_early_graduation_breakout
+        ):
+            for hist_row in valid_candles[-10:-1]:
+                rh = float(hist_row[2] or 0.0)
+                rl = float(hist_row[3] or 0.0)
+                rc = float(hist_row[4] or 0.0)
+                rvol = float(hist_row[5] or 0.0)
+                if rh > 0.0 and rl > 0.0 and rl <= (rh * 0.54) and rc <= (rh * 0.72) and rvol >= max(12_000.0, current_mc_usd * 0.08):
+                    hist_slam_pct = ((rh - rl) / rh) * 100.0
+                    return (
+                        False,
+                        f"MODUS #76B (Memori Jarum Bantingan Uji-Rug -{hist_slam_pct:.0f}%): Riwayat 5m pernah membanting keras "
+                        f"dengan penutupan lemah (Vol ${rvol:,.0f}) sebelum dipompa ulang -> Rawan rug pull tahap kedua!",
+                        {"ath_drawdown_pct": round(hist_slam_pct, 1)}
+                    )
+
     # 2b. PERISAI V3.2 (#20 & #21B): Mikrostruktur Khusus <$100K (Atap Limit-Sell Halus & Bearish Volume Divergence $BACKSTOCK Guard)
     if current_mc_usd < 100_000.0 and not is_hyper_wave1 and not is_wave2_staircase_reclaim:
         if len(valid_candles) >= 3:
@@ -10404,11 +10584,10 @@ def fetch_solana_largest_token_accounts(mint: str, timeout: float = 1.3) -> list
     return []
 
 
-def fetch_jup_1m_chart(mint: str, timeout: float = 1.5, candles: int = 12) -> dict | None:
+def fetch_jup_1m_chart(mint: str, timeout: float = 1.5, candles: int = 30) -> dict | None:
     """
-    MODUS #52C (V7.2): Ambil candle 1-menit (`1_MINUTE` mcap) real-time dari Jupiter DatAPI v2
-    agar puncak banting mikro 1-2 menit (seperti $Movember 11:23 ATH $66,715 -> 11:24 wick -33.7% ke $41,320)
-    tertangkap seketika meskipun tertutup oleh agregasi candle 5-menit!
+    MODUS #52C + #76B (V10.3): Ambil candle 1-menit (`1_MINUTE` mcap, 30 bar) real-time dari Jupiter DatAPI v2
+    agar puncak banting mikro 1-2 menit maupun jejak flash-slam mid-run tertangkap seketika meskipun tertutup agregasi 5m!
     """
     if not mint:
         return None
@@ -10971,11 +11150,12 @@ def audit_and_dispatch_candidate(
                     "verdict": "SKIP",
                     "reason": mm_reason,
                 }
-            # V7.9 MODUS #59A (Seamless Track-1 -> Track-2 Relay):
+            # V7.9 + V10.3 MODUS #59A (Seamless Track-1 -> Track-2 Relay):
             metrics = dict(mm_std_fallback)
             is_mm_micro_lane = False
             is_pre_pump_s2 = bool(metrics.get("is_pre_pump_silent_coil"))
             is_trap_rev_s2 = bool(metrics.get("is_scalper_trap_reversal"))
+            is_early_breakout_s2 = bool(metrics.get("is_early_graduation_breakout"))
             if isinstance(live_jup_mm, dict) and live_jup_mm and not isinstance(best_pair.get("jup_intel"), dict):
                 best_pair = dict(best_pair)
                 best_pair["jup_intel"] = live_jup_mm
@@ -11487,11 +11667,22 @@ def audit_and_dispatch_candidate(
                 "reason": f"Koin >$1M tapi kedalaman 1.0 SOL tipis (amblas {depth_loss_pct:.1f}% > 6.5%) -> Rawan FDV semu!"
             }
 
-    # MODUS #51 (V7.1 Stage-2 Anti-Kecoh Koin Tanpa Modal Besar Developer):
+    # MODUS #51 (V7.1 + V10.3 Stage-2 Anti-Kecoh Koin Tanpa Modal Besar Developer):
     # Jika developer sudah keluar habis atau modalnya kecil (`not has_heavy_dev_cap_s2`), kunci ketat koin >90m/<$100k & koin >180m!
     all_holders_cnt = int(holder_meta.get("total_holders") or 0)
+    _s2_jup_intel = best_pair.get("jup_intel") if isinstance(best_pair.get("jup_intel"), dict) else {}
+    _s2_org_sc = float(_s2_jup_intel.get("organic_score") or 0.0)
+    _s2_creator_pct_early = float(holder_meta.get("creator_pct") or 0.0)
+    _is_s2_clean_slow_lowcap = bool(
+        (is_early_breakout_s2 or is_pre_pump_s2)
+        and cand_age_mins <= 180.0
+        and liq >= 14_000.0
+        and all_holders_cnt >= 220
+        and _s2_creator_pct_early <= 0.15
+        and _s2_org_sc >= 55.0
+    )
     if not is_evm_chain and cand_age_mins > 90.0 and not has_heavy_dev_cap_s2:
-        if mc < 100_000.0 and not is_trap_rev_s2 and not (cand_age_mins <= 180.0 and int(metrics.get("cum_tx_24h") or 0) >= 1200 and liq >= 18_000.0 and all_holders_cnt >= 450):
+        if mc < 100_000.0 and not is_trap_rev_s2 and not _is_s2_clean_slow_lowcap and not (cand_age_mins <= 180.0 and int(metrics.get("cum_tx_24h") or 0) >= 1200 and liq >= 18_000.0 and all_holders_cnt >= 450):
             return {
                 "token": f"{name} (${symbol})",
                 "mint": mint,
@@ -11533,9 +11724,7 @@ def audit_and_dispatch_candidate(
                         f">={req_s2_holders} holders (saat ini baru {all_holders_cnt} holders) agar tidak terkecoh pump sempit!"
                     ),
                 }
-            _s2_jup_intel = best_pair.get("jup_intel") if isinstance(best_pair.get("jup_intel"), dict) else {}
-            _s2_org_sc = float(_s2_jup_intel.get("organic_score") or 0.0)
-            if _s2_org_sc > 0.0 and _s2_org_sc < 60.0:
+            if (("organic_score" in _s2_jup_intel) or bool(_s2_jup_intel.get("has_organic_telemetry"))) and _s2_org_sc < 60.0:
                 return {
                     "token": f"{name} (${symbol})",
                     "mint": mint,
@@ -12655,6 +12844,15 @@ def run_live_market_scan(engine, config) -> dict:
                 and float(intel.get("vol_h1") or 0.0) >= max(16_000.0, mc_v * 0.55)
                 and b_vol_i >= max(2_600.0, s_vol_i * 1.15)
             )
+            or (
+                not is_eb_pre_grad_i
+                and (24_000.0 <= mc_v <= 78_000.0)
+                and (-4.0 <= p_m5_i < 5.0)
+                and float(intel.get("organic_score") or 0.0) >= 48.0
+                and int(intel.get("holder_count") or 0) >= 120
+                and (p_h1_i >= 15.0 or float(intel.get("vol_h1") or 0.0) >= max(24_000.0, mc_v * 0.60))
+                and b_vol_i >= max(3_500.0, s_vol_i * 1.22)
+            )
         )
         is_v10_early_breakout_intake = bool(
             20_000.0 <= mc_v <= 118_000.0
@@ -12938,29 +13136,36 @@ def run_live_market_scan(engine, config) -> dict:
             else:
                 stage2_jobs.append((canonical_mint, sorted_p, best_p, metrics))
 
-    # TAHAP 2 (Paralel Terbatas & Hard-Deadline <7.5d): Prioritaskan Utama Jalur Koin Bot Bermodal Besar (ALERT 1/2)!
+    # TAHAP 2 (Paralel Terbatas & Hard-Deadline <7.5d): Prioritaskan Utama Bot <$10, Lalu Permata Awal <$118K, Lalu Runner Lainnya!
     alerts_sent = 0
     if len(stage2_jobs) > MAX_STAGE2_AUDITS_PER_SCAN:
-        stage2_jobs.sort(
-            key=lambda item: (
-                0
-                if bool(item[3].get("is_mm_staircase_micro"))
-                else (
-                    1
-                    if (
-                        bool(item[3].get("is_crypto_police_early_hot"))
-                        or bool(item[3].get("wall_absorption_breakout"))
-                        or bool(item[3].get("is_clean_crowd_velocity_coil"))
-                        or bool(item[3].get("is_scalper_trap_reversal"))
-                        or bool(item[3].get("is_pre_pump_silent_coil"))
-                        or bool(item[3].get("is_early_graduation_breakout"))
-                    )
-                    else 2
-                ),
-                -int(item[3].get("score") or 0),
-                -float(((item[2].get("liquidity") or {}).get("usd")) or 0.0),
+        def _stage2_queue_priority(item):
+            _bp_q = item[2]
+            _met_q = item[3]
+            _mc_q = float(_bp_q.get("marketCap") or _bp_q.get("fdv") or _met_q.get("spot_mc") or 0.0)
+            _is_t1_q = bool(
+                _met_q.get("is_crypto_police_early_hot")
+                or _met_q.get("wall_absorption_breakout")
+                or _met_q.get("is_clean_crowd_velocity_coil")
+                or _met_q.get("is_scalper_trap_reversal")
+                or _met_q.get("is_pre_pump_silent_coil")
+                or _met_q.get("is_early_graduation_breakout")
             )
-        )
+            if bool(_met_q.get("is_mm_staircase_micro")):
+                tier_q = 0
+            elif _is_t1_q and 0.0 < _mc_q < 118_000.0:
+                tier_q = 1
+            elif _is_t1_q:
+                tier_q = 2
+            else:
+                tier_q = 3
+            return (
+                tier_q,
+                -int(_met_q.get("score") or 0),
+                -float(((_bp_q.get("liquidity") or {}).get("usd")) or 0.0),
+            )
+
+        stage2_jobs.sort(key=_stage2_queue_priority)
         deferred_jobs = stage2_jobs[MAX_STAGE2_AUDITS_PER_SCAN:]
         stage2_jobs = stage2_jobs[:MAX_STAGE2_AUDITS_PER_SCAN]
         for def_m, _, def_bp, _ in deferred_jobs:
