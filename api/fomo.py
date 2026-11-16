@@ -661,7 +661,12 @@ def _evaluate_heavy_developer_capital(
     if primary_liq >= 42_000.0 and primary_mc > 0.0:
         liq_mc_pct_chk = (primary_liq / primary_mc) * 100.0
         age_m_chk = max(0.0, ((time.time() * 1000.0) - float(p_created_ms)) / 60000.0) if p_created_ms else 60.0
-        if (age_m_chk <= 180.0 and liq_mc_pct_chk >= 22.0) or (primary_liq >= 65_000.0 and liq_mc_pct_chk >= 24.0):
+        if (
+            (age_m_chk <= 180.0 and liq_mc_pct_chk >= 22.0)
+            or (primary_liq >= 65_000.0 and liq_mc_pct_chk >= 24.0)
+            or (primary_liq >= 150_000.0 and liq_mc_pct_chk >= 7.5)
+            or (primary_liq >= 250_000.0 and liq_mc_pct_chk >= 5.0)
+        ):
             proofs.append(f"Deep Seeded LP ${primary_liq:,.0f} ({liq_mc_pct_chk:.0f}% MC)")
 
     return bool(proofs), proofs
@@ -1401,7 +1406,17 @@ def _is_early_graduation_breakout_candidate(
     bot_pct = float(ji.get("bot_holders_pct") or 0.0)
     org_sc = float(ji.get("organic_score") or 0.0)
     h_cnt = int(ji.get("holder_count") or 0)
-    if bot_pct > (34.0 if mc_usd > 118_000.0 else 35.0):
+    _is_hi_org_clean_term_eb = bool(
+        age_minutes <= 90.0
+        and org_sc >= 65.0
+        and dev_bal <= 0.15
+        and sniper_pct < 3.5
+        and insider_pct < 2.5
+        and bundle_pct < 5.0
+        and h_cnt >= (240 if mc_usd > 86_000.0 else 140)
+    )
+    _max_eb_bot_pct = 38.0 if _is_hi_org_clean_term_eb else (34.0 if mc_usd > 118_000.0 else 35.0)
+    if bot_pct > _max_eb_bot_pct:
         return False, {}
 
     # Untuk koin 120m-180m (< $148K), wajib terverifikasi sangat bersih (Dev <= 0.15%, LP >= $14K-$18K, Holders >= 220, Org >= 55)
@@ -2112,6 +2127,16 @@ def _evaluate_crypto_police_early_hot_runner(
     _is_pre_pump_coil_p, _pre_pump_meta_p = _is_pre_pump_silent_coil(best_pair, mc, age_minutes=age_mins, liq_usd=liq)
     _is_trap_rev_p, _trap_rev_meta_p = _is_scalper_trap_reversal_candidate(best_pair, mc, age_minutes=age_mins, liq_usd=liq)
     is_police_h1_bull_flag_pre = bool(mc >= 140_000.0 and p_h1 >= 35.0 and liq >= 30_000.0 and bs_m5_p >= 1.28)
+    _police_hi_org_clean_term = bool(
+        ji
+        and org_sc >= 65.0
+        and dev_bal <= 0.15
+        and float(ji.get("sniper_pct") or 0.0) < 3.5
+        and float(ji.get("insider_pct") or 0.0) < 2.5
+        and float(ji.get("bundle_hold_pct") or 0.0) < 5.0
+        and j_holders >= (240 if mc > 86_000.0 else 140)
+    )
+    _police_sub150_bot_cap = 38.0 if _police_hi_org_clean_term else 28.0
     is_clean_early_sub150k_police = bool(
         30_000.0 <= mc <= 150_000.0
         and age_mins <= 90.0
@@ -2123,7 +2148,7 @@ def _evaluate_crypto_police_early_hot_runner(
         and float(ji.get("sniper_pct") or 0.0) < 6.0
         and float(ji.get("insider_pct") or 0.0) < 4.0
         and float(ji.get("bundle_hold_pct") or 0.0) < 5.0
-        and bot_pct <= 28.0
+        and bot_pct <= _police_sub150_bot_cap
         and (bot_pct < 24.0 or org_sc >= 60.0)
         and org_sc >= 55.0
         and j_holders >= (110 if mc <= 86_000.0 else 180)
@@ -2335,8 +2360,8 @@ def _evaluate_crypto_police_early_hot_runner(
         and dev_bal <= 0.15
         and float(ji.get("sniper_pct") or 0.0) < 3.5
         and float(ji.get("insider_pct") or 0.0) < 2.5
-        and float(ji.get("bundle_hold_pct") or 0.0) < 3.0
-        and bot_pct <= 36.0
+        and float(ji.get("bundle_hold_pct") or 0.0) < (5.0 if (org_sc >= 65.0 and j_holders >= 240) else 3.0)
+        and bot_pct <= (38.0 if (org_sc >= 65.0 and j_holders >= 240) else 36.0)
         and org_sc >= 50.0
         and j_holders >= 220
         and b_usd_5m >= max(10_000.0, mc * 0.12)
@@ -2489,6 +2514,22 @@ def _is_verified_organic_terminal_crowd(
         and int(jup_intel.get("holder_count") or 0) >= (180 if mc_j > 86_000.0 else 90)
         and eff_b_vol_5 >= max((6_000.0 if mc_j > 86_000.0 else 3_500.0), eff_s_vol_5 * 1.20)
         and vol_5 >= 5_000.0
+        and p_m5_j >= 4.0
+    ):
+        return True
+    if (
+        bot_pct <= 38.0
+        and 0.0 < mc_j <= 260_000.0
+        and 0.0 < age_j_mins <= 90.0
+        and liq_j >= (18_000.0 if mc_j > 118_000.0 else (16_000.0 if mc_j > 86_000.0 else 11_500.0))
+        and float(jup_intel.get("organic_score") or 0.0) >= 65.0
+        and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.15
+        and float(jup_intel.get("sniper_pct") or 0.0) < 3.5
+        and float(jup_intel.get("insider_pct") or 0.0) < 2.5
+        and float(jup_intel.get("bundle_hold_pct") or 0.0) < 5.0
+        and int(jup_intel.get("holder_count") or 0) >= (240 if mc_j > 86_000.0 else 140)
+        and eff_b_vol_5 >= max((8_000.0 if mc_j > 86_000.0 else 4_500.0), eff_s_vol_5 * 1.20)
+        and vol_5 >= 8_000.0
         and p_m5_j >= 4.0
     ):
         return True
@@ -3353,12 +3394,23 @@ def _evaluate_wall_absorption_override(
         and _is_seasoned_diamond_hand_cult_intel(jup_intel, mc_usd=mc, age_minutes=age_mins_w, liq_usd=liq)
         and (float(jup_intel.get("buy_vol_m5") or 0.0) <= 0.0 or float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.15)
     )
+    _is_mega_liq_steady_climber = bool(
+        mc >= 500_000.0
+        and liq >= 120_000.0
+        and ((liq / max(1.0, mc)) * 100.0) >= 6.0
+        and p_h1 >= 4.0
+        and p_h6 >= 10.0
+        and float((best_pair.get("priceChange") or {}).get("h24") or 0.0) >= 25.0
+        and float((best_pair.get("volume") or {}).get("h1") or 0.0) >= 40_000.0
+        and float((best_pair.get("volume") or {}).get("h24") or 0.0) >= 250_000.0
+        and b_m5 > s_m5
+    )
     is_sovereign_steady_climber_gateway = bool(
         (c_id in (0, 1, 2, 3) or mc >= 35_000.0)
         and (age_mins_w >= 180.0 or (age_mins_w >= 90.0 and jup_intel and int(jup_intel.get("holder_count") or 0) >= 350))
         and liq >= (12_000.0 if mc < 100_000.0 else (22_000.0 if mc < 150_000.0 else 32_000.0))
         and ((liq / max(1.0, mc)) * 100.0) >= 2.0
-        and (1.2 <= p_m5 <= (24.0 if _is_seasoned_cult_g else 15.0))
+        and ((0.6 if _is_mega_liq_steady_climber else 1.2) <= p_m5 <= (24.0 if _is_seasoned_cult_g else 15.0))
         and (p_h1 >= (4.0 if _is_seasoned_cult_g else 2.5) or p_h6 >= (6.0 if _is_seasoned_cult_g else 5.0) or float((best_pair.get("priceChange") or {}).get("h24") or 0.0) >= 8.0)
         and b_m5 >= s_m5
         and (b_m5 / float(max(1, s_m5))) >= (1.10 if pair_count >= 2 else 1.18)
@@ -3530,6 +3582,7 @@ def _evaluate_wall_absorption_override(
         "is_wave2_retest_consolidation_gateway": is_wave2_retest_consolidation_gateway,
         "is_lazarus_cto_revival_gateway": is_lazarus_cto_revival_gateway,
         "is_sovereign_steady_climber_gateway": is_sovereign_steady_climber_gateway,
+        "is_mega_liq_steady_climber": _is_mega_liq_steady_climber,
         "is_seasoned_cult_awakening": _is_seasoned_cult_g,
         "is_multipool_mev_velocity_gateway": is_multipool_mev_velocity_gateway,
         "is_pre_pump_silent_coil_gateway": is_pre_pump_silent_coil_gateway,
@@ -3927,13 +3980,14 @@ def evaluate_market_candidate(
         is_any_seasoned_cult = bool(is_verified_mature_cult or is_seasoned_cult_early_awakening)
 
         cto_liq_req = {1: 28_000.0, 2: 40_000.0, 3: 48_000.0, 4: 85_000.0, 5: 210_000.0}.get(c_cfg["corridor_id"], 999_999.0)
+        _c4_mega_liq_vol = 45_000.0 if (c_cfg["corridor_id"] == 4 and liq >= 150_000.0 and cum_tx_24h >= 2_500 and vol_h24 >= 350_000.0) else 85_000.0
         cto_vol_h1_req = (
             {4: 28_000.0, 5: 65_000.0}.get(c_cfg["corridor_id"], 85_000.0)
             if is_verified_mature_cult
             else (
                 {2: 12_000.0, 3: 18_000.0}.get(c_cfg["corridor_id"], 25_000.0)
                 if is_seasoned_cult_early_awakening
-                else {1: 25_000.0, 2: 35_000.0, 3: 35_000.0, 4: 85_000.0, 5: 180_000.0}.get(c_cfg["corridor_id"], 999_999.0)
+                else {1: 25_000.0, 2: 35_000.0, 3: 35_000.0, 4: _c4_mega_liq_vol, 5: 180_000.0}.get(c_cfg["corridor_id"], 999_999.0)
             )
         )
         cto_tx24_req = (
@@ -4177,14 +4231,19 @@ def evaluate_market_candidate(
     )
     _j_b5 = _s1_b_usd if _s1_b_usd > 0.0 else float(_jup_s1.get("buy_vol_m5") or 0.0)
     _j_s5 = _s1_s_usd if _s1_s_usd > 0.0 else float(_jup_s1.get("sell_vol_m5") or 0.0)
+    _j_hi_org_clean = bool(
+        _jup_s1
+        and float(_jup_s1.get("organic_score") or 0.0) >= 65.0
+        and int(_jup_s1.get("holder_count") or 0) >= 240
+    )
     _j_clean_term_vel = bool(
         _jup_s1
         and float(_jup_s1.get("organic_score") or 0.0) >= 50.0
         and float(_jup_s1.get("dev_bal_pct") or 0.0) <= 0.15
         and float(_jup_s1.get("sniper_pct") or 0.0) < 3.5
         and float(_jup_s1.get("insider_pct") or 0.0) < 2.5
-        and float(_jup_s1.get("bundle_hold_pct") or 0.0) < 3.0
-        and float(_jup_s1.get("bot_holders_pct") or 0.0) <= 36.0
+        and float(_jup_s1.get("bundle_hold_pct") or 0.0) < (5.0 if _j_hi_org_clean else 3.0)
+        and float(_jup_s1.get("bot_holders_pct") or 0.0) <= (38.0 if _j_hi_org_clean else 36.0)
         and int(_jup_s1.get("holder_count") or 0) >= 220
     )
     is_early_police_velocity_breakout = bool(
@@ -4339,7 +4398,7 @@ def evaluate_market_candidate(
     elif is_verified_mature_cult and is_proven_climber:
         min_p_m5 = 3.5
     elif bool(c_cfg.get("is_sovereign_steady_climber_gateway")):
-        min_p_m5 = 1.2
+        min_p_m5 = 0.6 if bool(c_cfg.get("is_mega_liq_steady_climber")) else 1.2
     elif bool(c_cfg.get("is_multipool_mev_velocity_gateway")):
         min_p_m5 = 3.0
     elif _is_fresh_fortress_coil_s1:
@@ -4636,6 +4695,11 @@ def evaluate_market_candidate(
             else ((0.80 if is_mega_corridor else 0.82) if high_tx_organic_flow else 0.90)
         )
     )
+    _is_steady_climber_cadence = bool(
+        (bool(c_cfg.get("is_sovereign_steady_climber_gateway")) or (is_cto_multi_day_breakout and is_mega_corridor))
+        and buy_sell_ratio_m5 >= 1.18
+        and p_h6 >= 8.0
+    )
     if _early_breakout_meta_s1.get("is_pre_grad_cooker_eb"):
         min_bs_m5 = min(min_bs_m5, 1.12)
         min_cvd = min(min_cvd, 5.5)
@@ -4644,11 +4708,17 @@ def evaluate_market_candidate(
         min_bs_m5 = min(min_bs_m5, 1.18)
         min_cvd = min(min_cvd, 7.0)
         h1_decay_floor = min(h1_decay_floor, 0.60)
+    elif _is_steady_climber_cadence:
+        h1_decay_floor = min(h1_decay_floor, 0.58)
 
     if buy_sell_ratio_m5 < min_bs_m5:
         return False, f"Rasio Buy/Sell kurang dominan ({buy_sell_ratio_m5:.2f}x < {min_bs_m5:.2f}x)", {}
 
-    eff_bs_h1_ref = min(buy_sell_ratio_h1, 2.05) if (high_tx_organic_flow and buy_sell_ratio_m5 >= 1.35) else buy_sell_ratio_h1
+    eff_bs_h1_ref = (
+        min(buy_sell_ratio_h1, 2.05)
+        if (_is_steady_climber_cadence or (high_tx_organic_flow and buy_sell_ratio_m5 >= 1.35))
+        else buy_sell_ratio_h1
+    )
     if age_minutes >= 20.0 and buy_sell_ratio_m5 < (eff_bs_h1_ref * h1_decay_floor):
         return False, f"Momentum beli melambat (Rasio M5 {buy_sell_ratio_m5:.2f}x < H1 {buy_sell_ratio_h1:.2f}x)", {}
 
@@ -9517,7 +9587,7 @@ def evaluate_anti_countertrade_shakeout_shield(
             and float(_ct_ji.get("dev_bal_pct") or 0.0) <= 0.15
             and float(_ct_ji.get("sniper_pct") or 0.0) < 3.5
             and float(_ct_ji.get("insider_pct") or 0.0) < 2.5
-            and float(_ct_ji.get("bundle_hold_pct") or 0.0) < 3.0
+            and float(_ct_ji.get("bundle_hold_pct") or 0.0) < (5.0 if _ct_org >= 65.0 else 3.0)
             and int(_ct_ji.get("holder_count") or 0) >= 250
         )
         c4 = candles[-4:]
@@ -12479,16 +12549,16 @@ def audit_and_dispatch_candidate(
         header_title = f"🚓⚡ *[POLISI KRIPTO — PREDIKSI PRA-TERBANG KOIN LAMA ({chain_id.upper()} V7.4)]*"
         out_alert_title = "POLISI KRIPTO DETEKSI DINI"
     elif is_multiday_rebound_s2 and not is_early_breakout_s2:
-        header_title = f"🔁🛡️ *[POLISI KRIPTO — REBOUND BERSIH MULTI-HARI ({chain_id.upper()} V10.4)]*"
+        header_title = f"🔁🛡️ *[POLISI KRIPTO — REBOUND BERSIH MULTI-HARI ({chain_id.upper()} V10.5)]*"
         out_alert_title = "REBOUND MULTI-HARI BERSIH"
     elif is_pre_pump_s2:
         header_title = f"🎯⚡ *[POLISI KRIPTO — PRE-PUMP SILENT COIL ({chain_id.upper()} V10.0)]*"
         out_alert_title = "POLISI KRIPTO DETEKSI DINI (PRE-PUMP)"
     elif is_early_breakout_s2:
         if bool(metrics.get("is_pre_grad_curve")):
-            header_title = f"🚨⚡ *[EARLY GRADUATION BREAKOUT · Pre-DEX Kurva Bonding ({chain_id.upper()} V10.4)]*"
+            header_title = f"🚨⚡ *[EARLY GRADUATION BREAKOUT · Pre-DEX Kurva Bonding ({chain_id.upper()} V10.5)]*"
         else:
-            header_title = f"🚨⚡ *[EARLY GRADUATION BREAKOUT / EARLY RUNNER <$150K ({chain_id.upper()} V10.4)]*"
+            header_title = f"🚨⚡ *[EARLY GRADUATION BREAKOUT / EARLY RUNNER <$150K ({chain_id.upper()} V10.5)]*"
         out_alert_title = "POLISI KRIPTO EARLY BREAKOUT"
     elif metrics.get("is_lazarus_cto_revival_gateway"):
         header_title = f"👑🔥 *[JALUR KEBANGKITAN KOMUNITAS — LAZARUS CTO REVIVAL ({chain_id.upper()} V8.6)]*"
@@ -12998,7 +13068,9 @@ def run_live_market_scan(engine, config) -> dict:
             "gt_1h": (_fetch_json_fast, ("https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?duration=1h&page=1", 1.9)),
             "gt_new": (_fetch_json_fast, ("https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1", 1.9)),
             "gt_bsc_5m": (_fetch_json_fast, ("https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?duration=5m&page=1", 1.9)),
+            "gt_bsc_trend": (_fetch_json_fast, ("https://api.geckoterminal.com/api/v2/networks/bsc/trending_pools?page=1", 1.9)),
             "gt_base_5m": (_fetch_json_fast, ("https://api.geckoterminal.com/api/v2/networks/base/trending_pools?duration=5m&page=1", 1.9)),
+            "gt_base_trend": (_fetch_json_fast, ("https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=1", 1.9)),
             "ray_org": (_fetch_json_fast, ("https://api.dexscreener.com/latest/dex/search?q=raydium", 2.0)),
             "organic": (_fetch_json_fast, ("https://api.dexscreener.com/latest/dex/search?q=pumpswap", 2.0)),
             "b_latest": (_fetch_json_fast, ("https://api.dexscreener.com/token-boosts/latest/v1", 2.0)),
@@ -13006,7 +13078,7 @@ def run_live_market_scan(engine, config) -> dict:
             "prof": (_fetch_json_fast, ("https://api.dexscreener.com/token-profiles/latest/v1", 2.0)),
         },
         hard_timeout_sec=2.25,
-        max_workers=21,
+        max_workers=23,
     )
 
     jup_gems = feed_results.get("jup_gems")
@@ -13023,7 +13095,9 @@ def run_live_market_scan(engine, config) -> dict:
     gt_new = feed_results.get("gt_new")
     gt_1h = feed_results.get("gt_1h")
     gt_bsc_5m = feed_results.get("gt_bsc_5m")
+    gt_bsc_trend = feed_results.get("gt_bsc_trend")
     gt_base_5m = feed_results.get("gt_base_5m")
+    gt_base_trend = feed_results.get("gt_base_trend")
     organic_search = feed_results.get("organic")
     ray_search = feed_results.get("ray_org")
     boosts_latest = feed_results.get("b_latest")
@@ -13089,6 +13163,18 @@ def run_live_market_scan(engine, config) -> dict:
                 and int(intel.get("traders_m5") or 0) >= 85
                 and int(intel.get("net_buyers_m5") or 0) >= 18
                 and float(intel.get("buy_vol_m5") or 0.0) >= max(12_000.0, float(intel.get("sell_vol_m5") or 0.0) * 1.06)
+            )
+            or (
+                float(intel.get("bot_holders_pct") or 0.0) <= 38.0
+                and _age_mins_i <= 90.0
+                and mc_v <= 260_000.0
+                and liq_v >= (18_000.0 if mc_v > 118_000.0 else (16_000.0 if mc_v > 86_000.0 else 11_500.0))
+                and float(intel.get("organic_score") or 0.0) >= 65.0
+                and float(intel.get("dev_bal_pct") or 0.0) <= 0.15
+                and float(intel.get("sniper_pct") or 0.0) < 3.5
+                and float(intel.get("insider_pct") or 0.0) < 2.5
+                and float(intel.get("bundle_hold_pct") or 0.0) < 5.0
+                and int(intel.get("holder_count") or 0) >= (240 if mc_v > 86_000.0 else 140)
             )
         )
         _is_cult_intake = _is_seasoned_diamond_hand_cult_intel(intel, mc_usd=mc_v, age_minutes=_age_mins_i, liq_usd=liq_v)
@@ -13269,11 +13355,13 @@ def run_live_market_scan(engine, config) -> dict:
     ordered_candidates.extend(jup_mm_staircase_items[:10])
     ordered_candidates.extend(_collect_gt(gt_5m_p1, "solana"))
     ordered_candidates.extend(_collect_gt(gt_bsc_5m, "bsc")[:12])
+    ordered_candidates.extend(_collect_gt(gt_bsc_trend, "bsc")[:10])
     ordered_candidates.extend(cto_items[:8])
     ordered_candidates.extend(latest_boost_items[:14])
     ordered_candidates.extend(_collect_gt(gt_ps, "solana")[:14])
     ordered_candidates.extend(_collect_gt(gt_new, "solana")[:12])
     ordered_candidates.extend(_collect_gt(gt_base_5m, "base")[:10])
+    ordered_candidates.extend(_collect_gt(gt_base_trend, "base")[:8])
     ordered_candidates.extend(profile_items[:12])
 
     for _org_payload in (organic_search, ray_search):
