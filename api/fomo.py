@@ -159,7 +159,7 @@ PIPELINE_REACTION_DELAY_SEC = float(os.getenv("PIPELINE_REACTION_DELAY_SEC", get
 PRIORITY_TIP_BUFFER_PCT = 1.0            # Buffer priority fee / Jito tip saat eksekusi nyata
 MAX_ROUNDTRIP_LOSS_PCT = float(os.getenv("MAX_ROUNDTRIP_LOSS_PCT", getattr(config, "MAX_ROUNDTRIP_LOSS_PCT", 5.5)))
 MIN_NET_PROFIT_AFTER_DELAY_PCT = float(os.getenv("MIN_NET_PROFIT_AFTER_DELAY_PCT", getattr(config, "MIN_NET_PROFIT_AFTER_DELAY_PCT", 18.0)))
-BATCH_CANDIDATE_LIMIT = min(90, int(os.getenv("BATCH_CANDIDATE_LIMIT", getattr(config, "BATCH_CANDIDATE_LIMIT", 90))))
+BATCH_CANDIDATE_LIMIT = min(150, int(os.getenv("BATCH_CANDIDATE_LIMIT", max(120, int(getattr(config, "BATCH_CANDIDATE_LIMIT", 120))))))
 ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC", getattr(config, "ALERT_COOLDOWN_SEC", 2700)))  # Cooldown 45m per lorong
 
 # KONSTANTA JALUR KHUSUS "MASUK DI AWAL" (PAUS POMPA DINI < $70K — NAIK DULU SEBELUM DUMP)
@@ -194,7 +194,7 @@ MM_FACTORY_MIN_BREAKEVEN_USD = 14_000.0     # Operator pabrik bot massal (devMin
 MM_WHALE_INTRUDER_AVG_TICKET_USD = 950.0    # Detektor Paus Luar penyusup (>= $950/dompet) pemicu Observer-Trap bandar!
 MM_SHOT_CLOCK_HOLD_MINS = 18.0              # Batas waktu umpan bandar gagal menarik ritel & mesin mulai loyo -> keluar manual aman!
 SCAN_HARD_BUDGET_SEC = float(os.getenv("SCAN_HARD_BUDGET_SEC", "7.5"))  # Hard-cap <7.5d agar 100% aman di bawah limit 10d Vercel Hobby & cron-job.org!
-MAX_STAGE2_AUDITS_PER_SCAN = int(os.getenv("MAX_STAGE2_AUDITS_PER_SCAN", "6"))  # V7.7: Kapasitas paralel Stage-2 ditingkatkan ke 6 agar runner organik tidak kelaparan antrean
+MAX_STAGE2_AUDITS_PER_SCAN = int(os.getenv("MAX_STAGE2_AUDITS_PER_SCAN", "10"))  # V11.0 MODUS #80: Kapasitas paralel Stage-2 ditingkatkan ke 10 agar zero blind time!
 _JUP_QUOTE_LOCK = threading.Lock()
 _JUP_LAST_QUOTE_TS = 0.0
 _JUP_MIN_QUOTE_SPACING_SEC = 0.105  # Pacing anti-burst Cloudflare/Jupiter Lite API (~9.5 req/detik mulus, bebas HTTP 429!)
@@ -917,16 +917,21 @@ def _evaluate_smart_money_conviction_overlay(
     rug_data: dict | None = None,
 ) -> dict:
     """
-    V10.0 MODUS #72 (Pengaman 2 — Smart Money Overlay Min-Size & No-Partial-Sell Validation):
-    Memberikan Early Conviction Multiplier (+8 skor & pembebasan akumulasi senyap di bawah batas arus AMM standar)
+    V10.0 MODUS #72 + V11.0 MODUS #80 (Pengaman Smart Money Multi-Wallet Convergence & Stealth Whale Absorption):
+    Memberikan Early Conviction Multiplier (+8 s/d +14 skor & pembebasan akumulasi senyap di bawah batas arus AMM standar)
     HANYA JIKA dompet Smart Money / paus organik terverifikasi memenuhi DUA pengaman kuantitatif ketat:
       1. Validasi Min-Size vs LP Depth: Ukuran beli signifikan (`>= max($280, LP * 0.8%)`), BUKAN bait buy mikro untuk memancing copy-trader!
       2. Validasi No-Partial-Sell: Belum terjadi aksi jual parsial signifikan (`sell_org_5m <= buy_org_5m * 0.45` dan tanpa flag partial sell).
+      3. Multi-Wallet Convergence (V11.0): >= 2 dompet Smart Money independen membeli token sama -> bonus +14 & coverage 0.20x.
     Tetap 100% tunduk pada perisai anti-rug / anti-siphon / anti-tersandera.
     """
     out = {
         "has_conviction_multiplier": False,
         "matched_wallets": [],
+        "matched_count": 0,
+        "is_multi_wallet_convergence": False,
+        "is_stealth_whale_absorption": False,
+        "total_smart_buy_usd": 0.0,
         "score_bonus": 0,
         "min_amm_coverage_mult": 0.35,
         "badge": "",
@@ -971,6 +976,8 @@ def _evaluate_smart_money_conviction_overlay(
                     break
 
     matched_valid: list[str] = []
+    seen_addrs: set[str] = set()
+    total_smart_buy_usd = 0.0
     saw_micro_or_sold_bait = False
     for cw in candidate_wallets:
         addr_s = str(cw.get("address") or "").strip()
@@ -987,6 +994,9 @@ def _evaluate_smart_money_conviction_overlay(
             saw_micro_or_sold_bait = True
             out["rejected_reason"] = f"Bait buy mikro (${buy_u:.0f} < min ${min_req_buy_usd:.0f} terhadap LP)"
             continue
+        if addr_l not in seen_addrs:
+            seen_addrs.add(addr_l)
+            total_smart_buy_usd += buy_u
         w_meta = real_top.get(addr_l) or real_ins.get(addr_l)
         w_label = getattr(w_meta, "name", None) or getattr(w_meta, "handle", None) or addr_s[:8]
         if str(w_label) not in matched_valid:
@@ -998,6 +1008,7 @@ def _evaluate_smart_money_conviction_overlay(
     s_usd_5m = float(ji.get("sell_vol_m5") or 0.0)
     org_buyers_5m = int(ji.get("organic_buyers_m5") or 0)
     avg_org_buy = (b_org_5m / float(max(1, org_buyers_5m))) if (b_org_5m > 0.0 and org_buyers_5m > 0) else 0.0
+    p_m5_ov = float((best_pair.get("priceChange") or {}).get("m5") or ji.get("p_m5") or 0.0)
     no_partial_sell_flow = bool(
         (b_org_5m <= 0.0 or s_org_5m <= (b_org_5m * 0.45))
         and (b_usd_5m <= 0.0 or s_usd_5m <= (b_usd_5m * 0.72))
@@ -1012,18 +1023,40 @@ def _evaluate_smart_money_conviction_overlay(
         and b_org_5m >= max(3_500.0, eff_liq * 0.14)
         and (avg_org_buy <= 0.0 or avg_org_buy >= min_req_buy_usd)
     )
+    is_stealth_abs = bool(
+        no_partial_sell_flow
+        and -2.0 <= p_m5_ov <= 9.5
+        and ((len(matched_valid) >= 1) or whale_org_qualified)
+    )
     if matched_valid and no_partial_sell_flow:
+        is_multi_sm = len(matched_valid) >= 2
         out["has_conviction_multiplier"] = True
-        out["matched_wallets"] = matched_valid[:3]
-        out["score_bonus"] = 8
-        out["min_amm_coverage_mult"] = 0.24
-        out["badge"] = f"Smart Money Terverifikasi ({', '.join(matched_valid[:2])} · Min-Size & 0 Partial Sell)"
+        out["matched_wallets"] = matched_valid[:4]
+        out["matched_count"] = len(matched_valid)
+        out["is_multi_wallet_convergence"] = is_multi_sm
+        out["is_stealth_whale_absorption"] = is_stealth_abs
+        out["total_smart_buy_usd"] = round(total_smart_buy_usd, 2)
+        out["score_bonus"] = 14 if is_multi_sm else 8
+        out["min_amm_coverage_mult"] = 0.20 if is_multi_sm else 0.24
+        out["badge"] = (
+            f"Konvergensi Multi-Smart-Money ({len(matched_valid)} dompet: {', '.join(matched_valid[:3])} · 0 Partial Sell)"
+            if is_multi_sm
+            else f"Smart Money Terverifikasi ({', '.join(matched_valid[:2])} · Min-Size & 0 Partial Sell)"
+        )
     elif whale_org_qualified:
         out["has_conviction_multiplier"] = True
         out["matched_wallets"] = [f"OrganicWhale(${b_org_5m:,.0f})"]
+        out["matched_count"] = 1
+        out["is_multi_wallet_convergence"] = False
+        out["is_stealth_whale_absorption"] = is_stealth_abs
+        out["total_smart_buy_usd"] = round(b_org_5m, 2)
         out["score_bonus"] = 8
         out["min_amm_coverage_mult"] = 0.24
-        out["badge"] = f"Akumulasi Paus Organik Terkonfirmasi (${b_org_5m:,.0f}/5m · 0 Partial Sell)"
+        out["badge"] = (
+            f"Stealth Whale Absorption (${b_org_5m:,.0f}/5m · Harga Tenang {p_m5_ov:+.1f}%)"
+            if is_stealth_abs
+            else f"Akumulasi Paus Organik Terkonfirmasi (${b_org_5m:,.0f}/5m · 0 Partial Sell)"
+        )
 
     return out
 
@@ -1073,6 +1106,401 @@ def _evaluate_universal_amm_pre_breakout_coverage(
         "coverage_ratio": round(coverage_ratio, 2),
         "delta_q_need_usd": round(delta_q_need, 0),
         "est_net_inflow_5m_usd": round(eff_net, 0),
+    }
+
+
+def _evaluate_liquidity_trajectory_shield(
+    best_pair: dict | None,
+    liq_usd: float = 0.0,
+    mc_usd: float = 0.0,
+    holder_meta: dict | None = None,
+    depth_loss_pct: float = 0.0,
+) -> tuple[bool, str, dict]:
+    """
+    V11.0 MODUS #80 — PILAR 5: ANALISIS TRAJEKTORI LIKUIDITAS & DETEKSI PENARIKAN LP DIAM-DIAM (STEALTH LP WITHDRAWAL):
+    Memanfaatkan telemetri `liq_change_m5` & `liq_change_h1` dari Jupiter DatAPI serta rasio kedalaman nyata
+    untuk memastikan:
+      1. Tidak ada penarikan likuiditas diam-diam (`liq_change_m5 <= -18%` disertai tekanan jual / candle lemah, atau `<= -30%` mutlak).
+      2. Likuiditas memadai dan konsisten bertambah (`liq_change_m5 >= +3%` atau `liq_change_h1 >= +8%`).
+      3. Risiko slippage kolam (1.0 SOL depth & SOL backing) tetap terkendali.
+    """
+    bp = best_pair if isinstance(best_pair, dict) else {}
+    ji = bp.get("jup_intel") if isinstance(bp.get("jup_intel"), dict) else {}
+    hm = holder_meta if isinstance(holder_meta, dict) else {}
+
+    eff_liq = max(float(liq_usd or 0.0), float((bp.get("liquidity") or {}).get("usd") or 0.0), float(ji.get("liq") or 0.0))
+    eff_mc = max(float(mc_usd or 0.0), float(bp.get("marketCap") or bp.get("fdv") or 0.0), float(ji.get("mc") or 0.0))
+    liq_mc_pct = (eff_liq / max(1.0, eff_mc)) * 100.0 if eff_mc > 0.0 else 0.0
+
+    liq_chg_m5 = float(ji.get("liq_change_m5") or bp.get("liq_change_m5") or 0.0)
+    liq_chg_h1 = float(ji.get("liq_change_h1") or bp.get("liq_change_h1") or 0.0)
+    b_vol_m5 = float(ji.get("buy_vol_m5") or 0.0)
+    s_vol_m5 = float(ji.get("sell_vol_m5") or 0.0)
+    p_m5 = float((bp.get("priceChange") or {}).get("m5") or ji.get("p_m5") or 0.0)
+    tx_m5 = (bp.get("txns") or {}).get("m5") or {}
+    buys_m5 = int(tx_m5.get("buys") or ji.get("buys_m5") or 0)
+    sells_m5 = int(tx_m5.get("sells") or ji.get("sells_m5") or 0)
+
+    is_lp_growing = bool(liq_chg_m5 >= 3.0 or (liq_chg_h1 >= 8.0 and liq_chg_m5 >= 0.0))
+    lp_locked_pct = float(hm.get("lp_locked_pct") or 0.0)
+    sol_backing = float(hm.get("sol_backing_ratio") or 0.0)
+
+    meta = {
+        "liq_change_m5": round(liq_chg_m5, 2),
+        "liq_change_h1": round(liq_chg_h1, 2),
+        "liq_mc_pct": round(liq_mc_pct, 2),
+        "is_lp_growing": is_lp_growing,
+        "lp_locked_pct": round(lp_locked_pct, 1),
+        "sol_backing_ratio": round(sol_backing, 1),
+        "depth_loss_pct": round(float(depth_loss_pct or 0.0), 2),
+        "pillar_score": 0,
+    }
+
+    # Veto Fail-Closed Stealth LP Withdrawal / Pool Drain
+    if liq_chg_m5 <= -30.0:
+        return (
+            False,
+            f"MODUS #80 Pilar 5 (Penarikan Likuiditas Ekstrem 5m): LP menyusut {liq_chg_m5:.1f}% -> Bahaya Tarik LP!",
+            meta,
+        )
+    if liq_chg_m5 <= -18.0 and (
+        (s_vol_m5 > b_vol_m5 and (b_vol_m5 > 0.0 or s_vol_m5 > 0.0))
+        or (sells_m5 > 0 and sells_m5 >= buys_m5)
+        or p_m5 < 5.0
+    ):
+        return (
+            False,
+            f"MODUS #80 Pilar 5 (Stealth Liquidity Withdrawal): LP menyusut {liq_chg_m5:.1f}% bersamaan dengan distribusi jual -> Rawan Rug LP!",
+            meta,
+        )
+    if liq_chg_h1 <= -32.0 and liq_chg_m5 < 2.0 and p_m5 < 12.0:
+        return (
+            False,
+            f"MODUS #80 Pilar 5 (Erosi Likuiditas 1 Jam): LP turun {liq_chg_h1:.1f}% tanpa pemulihan -> Kolam rawan keropos!",
+            meta,
+        )
+
+    score = 0
+    if eff_liq >= 30_000.0 and liq_mc_pct >= 14.0:
+        score += 6
+    elif eff_liq >= 15_000.0 and liq_mc_pct >= 10.0:
+        score += 5
+    elif eff_liq >= 6_500.0:
+        score += 3
+
+    if is_lp_growing:
+        score += 4
+    elif liq_chg_m5 >= 0.0 and liq_chg_h1 >= 0.0:
+        score += 2
+
+    if lp_locked_pct >= 90.0:
+        score += 2
+    elif not hm:
+        score += 1  # Stage 1 sebelum RugCheck
+
+    if sol_backing >= 38.0 or (not hm and eff_liq >= 10_000.0):
+        score += 2
+    if float(depth_loss_pct or 0.0) <= 5.5:
+        score += 1
+
+    meta["pillar_score"] = min(15, score)
+    return True, "OK", meta
+
+
+def evaluate_seven_pillar_pre_pump_confluence(
+    best_pair: dict | None,
+    mc_usd: float,
+    liq_usd: float = 0.0,
+    age_minutes: float = 15.0,
+    boost_amount: int = 0,
+    pair_count: int = 1,
+    all_pairs: list | None = None,
+    dex_orders_payload=None,
+    rug_data: dict | None = None,
+    holder_meta: dict | None = None,
+    ohlcv_payload: dict | None = None,
+    chart_1m_payload: dict | None = None,
+    rt_loss_pct: float = 0.0,
+    depth_loss_pct: float = 0.0,
+    metrics: dict | None = None,
+) -> dict:
+    """
+    V11.0 MODUS #80 — EVALUATOR KONFLUENSI 7-PILAR PRA-PUMP & ANTI-MANIPULASI (UNTUK KOIN BARU & KOIN LAMA):
+      1. Developer Commitment & Economic Incentive (sunk-cost iklan/boost/LP sekunder vs net inflow balik modal)
+      2. Smart Money Accumulation (1 dompet vs >=2 konvergensi multi-dompet + stealth whale absorption)
+      3. Buy Pressure & Volume (rasio buy/sell USD, pertumbuhan unique buyers vs sellers, serapan suplai pra-breakout)
+      4. Holder & Wallet Health (pertumbuhan organik, Pareto sehat, pantau partial-sell insider, anti-Sybil)
+      5. Liquidity Analysis (pertumbuhan LP nyata, anti stealth withdrawal, depth & slippage)
+      6. Token Revival & Breakout (kebangkitan koin lama konsolidasi atau struktur coiling/ignition koin baru)
+      7. Anti-Manipulation Shield (anti wash-bot, fake volume, Sybil, 1m peak rollover, bundler split, & LP drain)
+    """
+    bp = best_pair if isinstance(best_pair, dict) else {}
+    ji = bp.get("jup_intel") if isinstance(bp.get("jup_intel"), dict) else {}
+    hm = holder_meta if isinstance(holder_meta, dict) else {}
+    met = metrics if isinstance(metrics, dict) else {}
+    crowd = bp.get("gt_crowd") if isinstance(bp.get("gt_crowd"), dict) else {}
+
+    eff_liq = max(float(liq_usd or 0.0), float((bp.get("liquidity") or {}).get("usd") or 0.0), float(ji.get("liq") or 0.0))
+    eff_mc = max(float(mc_usd or 0.0), float(bp.get("marketCap") or bp.get("fdv") or 0.0), float(ji.get("mc") or 0.0))
+
+    # --- PILAR 1: Developer Commitment & Economic Incentive (0..15) ---
+    has_heavy_dev, dev_proofs = _evaluate_heavy_developer_capital(
+        best_pair=bp,
+        pair_count=pair_count,
+        boost_amount=boost_amount,
+        all_pairs=all_pairs,
+        dex_orders_payload=dex_orders_payload,
+    )
+    eff_boost = max(int(boost_amount or 0), int(((bp.get("boosts") or {}).get("active")) or 0))
+    paid_orders_usd = 0.0
+    order_items = dex_orders_payload if isinstance(dex_orders_payload, list) else ((dex_orders_payload or {}).get("orders") if isinstance(dex_orders_payload, dict) else [])
+    for o_it in (order_items or []):
+        if isinstance(o_it, dict) and str(o_it.get("status") or "").lower() in {"approved", "processing", "active", "completed"}:
+            o_t = str(o_it.get("type") or "")
+            if o_t == "trendingBarAd":
+                paid_orders_usd += 2_999.0
+            elif o_t == "tokenAd":
+                paid_orders_usd += 1_999.0
+            elif o_t == "tokenProfile":
+                paid_orders_usd += 299.0
+    sunk_cost_usd = paid_orders_usd + (eff_boost * 8.0) + (4_000.0 if any("Kolam Sekunder" in str(p) for p in dev_proofs) else 0.0)
+    b_usd_5m, s_usd_5m = _resolve_effective_m5_usd_flow(bp, ji)
+    b_usd_h1 = float(ji.get("buy_vol_h1") or 0.0)
+    s_usd_h1 = float(ji.get("sell_vol_h1") or 0.0)
+    if b_usd_h1 > 0.0 or s_usd_h1 > 0.0:
+        ext_net_inflow = max(0.0, b_usd_h1 - s_usd_h1)
+    else:
+        ext_net_inflow = max(0.0, b_usd_5m - s_usd_5m)
+    dev_bal_pct = float(hm.get("creator_pct") if "creator_pct" in hm else (ji.get("dev_bal_pct") or 0.0))
+    total_holders = int(hm.get("total_holders") or ji.get("holder_count") or 0)
+
+    p_m5 = float((bp.get("priceChange") or {}).get("m5") or ji.get("p_m5") or 0.0)
+    p_h1 = float((bp.get("priceChange") or {}).get("h1") or ji.get("p_h1") or 0.0)
+    p_h6 = float((bp.get("priceChange") or {}).get("h6") or ji.get("p_h6") or 0.0)
+    dev_incentive_status = "NEUTRAL"
+    p1_score = 3
+    if sunk_cost_usd >= 999.0 or has_heavy_dev:
+        rec_pct = (ext_net_inflow / max(1.0, max(999.0, sunk_cost_usd))) * 100.0
+        if rec_pct < 75.0:
+            dev_incentive_status = "UNRECOVERED_INCENTIVE"
+            p1_score = 15 if sunk_cost_usd >= 1_999.0 else 13
+        elif rec_pct >= 135.0 and (s_usd_5m > b_usd_5m or p_m5 < 0.0):
+            dev_incentive_status = "RECOVERED_OR_EXITING"
+            p1_score = 4
+        else:
+            dev_incentive_status = "ACTIVE_COMMITMENT"
+            p1_score = 11
+    elif dev_bal_pct <= 0.15 and total_holders >= 200:
+        dev_incentive_status = "CTO_ZERO_OVERHANG"
+        p1_score = 10
+    elif eff_boost >= 50 or paid_orders_usd >= 299.0:
+        dev_incentive_status = "LIGHT_COMMITMENT"
+        p1_score = 7
+
+    if dev_bal_pct >= 8.0 and not has_heavy_dev and age_minutes > 45.0:
+        p1_score = max(0, p1_score - 5)
+
+    # --- PILAR 2: Smart Money Accumulation & Multi-Wallet Convergence (0..15) ---
+    sm_overlay = _evaluate_smart_money_conviction_overlay(bp, eff_liq, rug_data=rug_data)
+    ed_res = hm.get("early_diamond_res") if isinstance(hm.get("early_diamond_res"), dict) else {}
+    ed_detected = bool(ed_res.get("detected") or met.get("is_early_diamond_conviction"))
+    p2_score = 2
+    if sm_overlay.get("is_multi_wallet_convergence"):
+        p2_score = 15
+    elif sm_overlay.get("has_conviction_multiplier") and ed_detected:
+        p2_score = 14
+    elif sm_overlay.get("has_conviction_multiplier"):
+        p2_score = 12
+    elif ed_detected:
+        p2_score = 11
+    elif float(ji.get("buy_organic_vol_m5") or 0.0) >= max(2_500.0, eff_liq * 0.08) and -2.0 <= p_m5 <= 11.0:
+        p2_score = 9
+    if sm_overlay.get("rejected_reason"):
+        p2_score = max(0, p2_score - 6)
+
+    # --- PILAR 3: Buy Pressure, Unique Buyer Velocity & Supply Absorption (0..15) ---
+    txns = bp.get("txns") or {}
+    m5_tx = txns.get("m5") or {}
+    h1_tx = txns.get("h1") or {}
+    buys_m5 = int(m5_tx.get("buys") or ji.get("buys_m5") or 0)
+    sells_m5 = int(m5_tx.get("sells") or ji.get("sells_m5") or 0)
+    buys_h1 = int(h1_tx.get("buys") or ji.get("buys_h1") or 0)
+    tx_bs_m5 = buys_m5 / float(max(1, sells_m5))
+    usd_bs_m5 = (b_usd_5m / float(max(1.0, s_usd_5m))) if b_usd_5m > 0.0 else tx_bs_m5
+
+    uniq_b5 = int(crowd.get("buyers_m5") or ji.get("organic_buyers_m5") or 0)
+    uniq_s5 = int(crowd.get("sellers_m5") or 0)
+    uniq_bh1 = int(crowd.get("buyers_h1") or ji.get("organic_buyers_h1") or 0)
+    net_buyers_m5 = int(ji.get("net_buyers_m5") or (uniq_b5 - uniq_s5))
+
+    min_cov_req = float(sm_overlay.get("min_amm_coverage_mult") or 0.35)
+    amm_ok, amm_meta = _evaluate_universal_amm_pre_breakout_coverage(
+        bp, eff_mc, eff_liq, target_gain_pct=22.0, min_coverage_req=min_cov_req
+    )
+    is_supply_absorption = bool(
+        -2.5 <= p_m5 <= 12.5
+        and (usd_bs_m5 >= 1.22 or tx_bs_m5 >= 1.32)
+        and (net_buyers_m5 >= 5 or uniq_b5 > uniq_s5 or amm_ok)
+    )
+    p3_score = 0
+    if usd_bs_m5 >= 1.40 or tx_bs_m5 >= 1.50:
+        p3_score += 5
+    elif usd_bs_m5 >= 1.15 or tx_bs_m5 >= 1.20:
+        p3_score += 3
+    if net_buyers_m5 >= 10 or (uniq_b5 >= 15 and uniq_b5 > (uniq_s5 * 1.25)):
+        p3_score += 5
+    elif net_buyers_m5 >= 4 or (uniq_b5 > uniq_s5):
+        p3_score += 3
+    if amm_ok:
+        p3_score += 3
+    if is_supply_absorption:
+        p3_score += 2
+    p3_score = min(15, p3_score)
+
+    # --- PILAR 4: Holder & Wallet Network Analysis (0..15) ---
+    org_score = float(ji.get("organic_score") or 0.0)
+    pure_top10 = float(hm.get("pure_top10") or hm.get("top10_pct") or 0.0)
+    max_single = float(hm.get("max_single_pure") or 0.0)
+    sniper_pct = float(ji.get("sniper_pct") or 0.0)
+    insider_pct = float(ji.get("insider_pct") or 0.0)
+    bot_pct = float(ji.get("bot_holders_pct") or 0.0)
+    graph_insiders = int((rug_data or {}).get("graphInsidersDetected") or 0) if isinstance(rug_data, dict) else 0
+
+    p4_score = 0
+    if total_holders >= 300:
+        p4_score += 5
+    elif total_holders >= 120:
+        p4_score += 4
+    elif total_holders >= 55:
+        p4_score += 3
+    if org_score >= 60.0:
+        p4_score += 3
+    elif org_score >= 48.0:
+        p4_score += 2
+    if hm:
+        if pure_top10 <= 24.0 and max_single <= 4.65:
+            p4_score += 4
+        elif pure_top10 <= 30.0:
+            p4_score += 2
+    elif sniper_pct < 6.0 and insider_pct < 4.5 and bot_pct < 28.0:
+        p4_score += 3
+    if (hm or graph_insiders == 0) and not sm_overlay.get("rejected_reason"):
+        p4_score += 3
+    elif not sm_overlay.get("rejected_reason"):
+        p4_score += 1
+    p4_score = min(15, p4_score)
+
+    # --- PILAR 5: Liquidity Trajectory & Depth Integrity (0..15) ---
+    liq_ok, liq_veto_reason, liq_meta = _evaluate_liquidity_trajectory_shield(
+        bp, liq_usd=eff_liq, mc_usd=eff_mc, holder_meta=hm, depth_loss_pct=depth_loss_pct
+    )
+    p5_score = int(liq_meta.get("pillar_score") or 0) if liq_ok else 0
+
+    # --- PILAR 6: Token Revival & Consolidation Breakout (0..15) ---
+    vol_m5 = float((bp.get("volume") or {}).get("m5") or ji.get("vol_m5") or 0.0)
+    vol_h1 = float((bp.get("volume") or {}).get("h1") or ji.get("vol_h1") or 0.0)
+    eff_h1_mins = min(60.0, max(5.0, float(age_minutes or 15.0)))
+    accel_ratio = (vol_m5 / 5.0) / max(1.0, vol_h1 / eff_h1_mins)
+    is_revival_track = bool(
+        met.get("is_clean_multiday_rebound")
+        or met.get("is_dormant_whale_coil")
+        or met.get("is_lazarus_cto_revival_gateway")
+        or met.get("is_sovereign_steady_climber_gateway")
+        or met.get("is_scalper_trap_reversal")
+        or (age_minutes >= 90.0 and accel_ratio >= 1.25 and p_m5 >= 1.5 and (p_h1 >= 4.0 or p_h6 >= 4.0))
+    )
+    is_new_pre_pump_track = bool(
+        age_minutes < 90.0
+        and (
+            met.get("is_pre_pump_silent_coil")
+            or met.get("is_early_graduation_breakout")
+            or ed_detected
+            or met.get("is_clean_crowd_velocity_coil")
+            or met.get("is_pre_grad_curve")
+            or (0.5 <= p_m5 <= 35.0 and accel_ratio >= 1.15 and is_supply_absorption)
+        )
+    )
+    p6_score = 4
+    if is_revival_track:
+        p6_score = 15 if (accel_ratio >= 1.40 and (p_h1 >= 6.0 or p_m5 >= 4.0)) else 13
+    elif is_new_pre_pump_track:
+        p6_score = 14 if (accel_ratio >= 1.35 or ed_detected or is_supply_absorption) else 12
+    elif accel_ratio >= 1.25 and p_m5 >= 2.0:
+        p6_score = 10
+
+    # --- PILAR 7: Anti-Manipulation Fail-Closed Shield (0..10 + Hard Veto) ---
+    is_sybil_unverified_p7 = False
+    if not hm and graph_insiders > 0 and not ed_detected:
+        is_sybil_unverified_p7 = bool(
+            (total_holders == 0 and graph_insiders >= 45)
+            or (0 < total_holders < 1200 and graph_insiders >= 15 and (graph_insiders / float(total_holders)) >= 0.15 and insider_pct >= 5.0)
+            or (0 < total_holders < 1200 and graph_insiders >= 90)
+        )
+    veto_reason = ""
+    if not liq_ok:
+        veto_reason = liq_veto_reason
+    elif uniq_b5 > 0 and buys_m5 >= 40 and (buys_m5 / float(uniq_b5)) > 5.5:
+        veto_reason = f"MODUS #80 Pilar 7 (Wash-Bot 5m): {buys_m5} klik beli hanya dari {uniq_b5} dompet unik!"
+    elif uniq_bh1 > 0 and buys_h1 >= 180 and (buys_h1 / float(uniq_bh1)) > 7.5:
+        veto_reason = f"MODUS #80 Pilar 7 (Botnet Cuci Volume H1): {buys_h1} klik hanya dari {uniq_bh1} dompet!"
+    elif is_sybil_unverified_p7:
+        veto_reason = f"MODUS #80 Pilar 7 (Klaster Sybil On-Chain): Terdeteksi {graph_insiders} jaringan insider terhubung!"
+
+    if not veto_reason and chart_1m_payload is not None:
+        c1m_ok, c1m_rsn, _ = _evaluate_1m_chart_police_guard(chart_1m_payload, eff_mc, age_minutes=age_minutes)
+        if not c1m_ok:
+            veto_reason = c1m_rsn
+
+    if not veto_reason:
+        cons_ok, cons_rsn = _verify_bundler_supply_conservation(bp, eff_mc, age_minutes=age_minutes)
+        if not cons_ok:
+            veto_reason = cons_rsn
+
+    p7_score = 10 if (not veto_reason and not sm_overlay.get("rejected_reason")) else (5 if not veto_reason else 0)
+
+    pillar_breakdown = {
+        "developer_commitment": p1_score,
+        "smart_money_accumulation": p2_score,
+        "buy_pressure_volume": p3_score,
+        "holder_wallet_health": p4_score,
+        "liquidity_analysis": p5_score,
+        "revival_or_breakout": p6_score,
+        "anti_manipulation": p7_score,
+    }
+    thresholds = {
+        "developer_commitment": 7,
+        "smart_money_accumulation": 8,
+        "buy_pressure_volume": 8,
+        "holder_wallet_health": 8,
+        "liquidity_analysis": 8,
+        "revival_or_breakout": 9,
+        "anti_manipulation": 7,
+    }
+    active_pillars = [k for k, v in pillar_breakdown.items() if v >= thresholds[k]]
+    total_score = min(100, sum(pillar_breakdown.values()))
+    prob_pct = 0 if veto_reason else min(98, max(5, int(round(total_score * 0.96))))
+
+    return {
+        "ok": not bool(veto_reason),
+        "veto_reason": veto_reason,
+        "total_score": total_score,
+        "pre_pump_probability_pct": prob_pct,
+        "active_pillars_count": len(active_pillars),
+        "active_pillars": active_pillars,
+        "pillar_breakdown": pillar_breakdown,
+        "dev_incentive_status": dev_incentive_status,
+        "dev_sunk_cost_usd": round(sunk_cost_usd, 0),
+        "is_multi_wallet_sm": bool(sm_overlay.get("is_multi_wallet_convergence")),
+        "is_supply_absorption": is_supply_absorption,
+        "is_revival_breakout": is_revival_track,
+        "liquidity_meta": liq_meta,
+        "smart_money_overlay": sm_overlay,
+        "amm_coverage": amm_meta,
+        "summary_badge": (
+            f"{len(active_pillars)}/7 Pilar Aktif (Skor {total_score}/100 · Prob Pra-Pump {prob_pct}%)"
+            if not veto_reason
+            else veto_reason
+        ),
     }
 
 
@@ -3957,6 +4385,13 @@ def evaluate_market_candidate(
         dex_orders_payload=dex_orders_payload,
     )
 
+    # V11.0 MODUS #80 PILAR 5: Veto Stealth LP Withdrawal & Erosi Likuiditas 0ms (Fail-Closed paling awal)
+    _liq_shield_ok_s1, _liq_shield_reason_s1, _liq_shield_meta_s1 = _evaluate_liquidity_trajectory_shield(
+        best_pair, liq_usd=liq, mc_usd=mc
+    )
+    if not _liq_shield_ok_s1:
+        return False, _liq_shield_reason_s1, {}
+
     # 0. Invarian Keamanan Telemetri USD Volume Asli & Capital-Weighted Bot/Sniper Bag (MODUS #47 + MODUS #51 V7.1)
     jup_ok, jup_reason = evaluate_jup_onchain_intel_shield(
         best_pair, mc, has_heavy_dev_capital=has_heavy_dev_cap
@@ -5315,6 +5750,7 @@ def evaluate_market_candidate(
         + (6.0 if _is_multiday_rebound_s1 else 0.0)
         + (9.0 if _is_early_diamond_s1 else 0.0)
         + (14.0 if (_is_early_breakout_s1 and bool(_early_breakout_meta_s1.get("is_pre_grad_cooker_eb"))) else (7.0 if _is_early_breakout_s1 else 0.0))
+        + (3.0 if _liq_shield_meta_s1.get("is_lp_growing") else 0.0)
         + float(_sm_overlay_s1.get("score_bonus") or 0.0)
         + pre_bot_organic_bonus
     )
@@ -5332,7 +5768,7 @@ def evaluate_market_candidate(
     if score < 76:
         return False, f"Skor konvergensi momentum kurang ({score}/100 < 76)", {}
 
-    return True, "LOLOS CORRIDOR & DELAY GUARD", {
+    s1_metrics_out = {
         "score": score,
         "corridor_id": c_cfg["corridor_id"],
         "corridor_name": c_cfg["corridor_name"],
@@ -5379,7 +5815,20 @@ def evaluate_market_candidate(
         "corridor_key_suffix": "TR0" if _is_trap_rev_s1 else ("EB0" if _is_early_breakout_s1 else ("MR0" if _is_multiday_rebound_s1 else ("ED0" if _is_early_diamond_s1 else ""))),
         "smart_money_conviction_overlay": _sm_overlay_s1,
         "amm_pre_breakout_coverage": _amm_cov_meta_s1,
+        "liquidity_trajectory_meta": _liq_shield_meta_s1,
     }
+    s1_metrics_out["seven_pillar_stage1"] = evaluate_seven_pillar_pre_pump_confluence(
+        best_pair=best_pair,
+        mc_usd=mc,
+        liq_usd=liq,
+        age_minutes=age_minutes,
+        boost_amount=boost_amount,
+        pair_count=pair_count,
+        all_pairs=all_pairs,
+        dex_orders_payload=dex_orders_payload,
+        metrics=s1_metrics_out,
+    )
+    return True, "LOLOS CORRIDOR & DELAY GUARD", s1_metrics_out
 
 
 # ==============================================================================
@@ -5390,6 +5839,10 @@ def evaluate_market_candidate(
 def evaluate_early_whale_candidate(best_pair: dict, pair_count: int = 1, boost_amount: int = 0) -> tuple[bool, str, dict]:
     mc = float(best_pair.get("marketCap") or best_pair.get("fdv") or 0.0)
     liq = float((best_pair.get("liquidity") or {}).get("usd") or 0.0)
+
+    _ew_liq_ok, _ew_liq_reason, _ = _evaluate_liquidity_trajectory_shield(best_pair, liq_usd=liq, mc_usd=mc)
+    if not _ew_liq_ok:
+        return False, _ew_liq_reason, {}
 
     ew_jup_ok, ew_jup_reason = evaluate_jup_onchain_intel_shield(best_pair, mc)
     if not ew_jup_ok:
@@ -12514,6 +12967,16 @@ def audit_and_dispatch_candidate(
             "reason": boost_trap_reason,
         }
 
+    # V11.0 MODUS #80 PILAR 5: Stage-2 Fail-Closed Stealth LP Withdrawal Shield
+    _liq_ok_s2, _liq_reason_s2, _ = _evaluate_liquidity_trajectory_shield(best_pair, liq_usd=liq, mc_usd=mc)
+    if not _liq_ok_s2:
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": _liq_reason_s2,
+        }
+
     early_diamond_res = {"detected": False, "count": 0, "total_pct": 0.0, "wallets": [], "badge": ""}
     is_early_diamond_s2 = False
     tracked_insiders_s2 = []
@@ -13058,6 +13521,31 @@ def audit_and_dispatch_candidate(
         sub100k_meta["deterrence_proofs"] = existing_p[:3]
         sub100k_meta["is_sub100k_verified"] = True
 
+    seven_p_s2 = evaluate_seven_pillar_pre_pump_confluence(
+        best_pair=best_pair,
+        mc_usd=live_mc,
+        liq_usd=liq,
+        age_minutes=cand_age_mins,
+        boost_amount=int(metrics.get("boost_amount") or 0),
+        pair_count=max(1, active_comp_pools),
+        all_pairs=pairs,
+        dex_orders_payload=dex_orders_data,
+        rug_data=rug_data,
+        holder_meta=holder_meta,
+        ohlcv_payload=ohlcv_data,
+        chart_1m_payload=None,
+        rt_loss_pct=rt_loss_pct,
+        depth_loss_pct=depth_loss_pct,
+        metrics=metrics,
+    )
+    if not seven_p_s2.get("ok"):
+        return {
+            "token": f"{name} (${symbol})",
+            "mint": mint,
+            "verdict": "SKIP",
+            "reason": seven_p_s2.get("veto_reason") or "Ditolak perisai 7-Pilar Anti-Manipulasi MODUS #80",
+        }
+
     if metrics.get("is_early_whale"):
         early_proj_mc = live_mc * (1.0 + (metrics["est_delay_drift_pct"] / 100.0))
         ew_ok, ew_reason, ew_meta = verify_early_whale_stage2(
@@ -13108,6 +13596,10 @@ def audit_and_dispatch_candidate(
                 if is_early_diamond_s2
                 else ""
             )
+            ew_sp_line = (
+                f"🧭 *Konfluensi 7-Pilar Pra-Pump:* `{seven_p_s2['active_pillars_count']}/7 Pilar Aktif` · "
+                f"Skor `{seven_p_s2['total_score']}/100` *(Prob `{seven_p_s2['pre_pump_probability_pct']}%`)*\n"
+            )
             alert_msg = (
                 f"🚀 *MASUK DI AWAL*\n"
                 f"{header_sub}\n"
@@ -13122,6 +13614,7 @@ def audit_and_dispatch_candidate(
                 f"• *TP 2 (Panen 30%):* `${tp2_mc:,.0f}` *(+{tp2_net_pct:.0f}% — Ekspansi Menengah)*\n"
                 f"• *Moonbag Gratis (20%):* `${tp3_mc:,.0f}+` *(Kawal jika Paus pompa +1.000% s/d +2.000%!)*\n"
                 f"{ew_exit_watch_note}"
+                f"{ew_sp_line}"
                 f"🛡️ *Mode Siluman Anti-Banting Dev:* Cicil `2x` (`50%` sekarang + `50%` antre `${ew_stealth['dip_limit_mc']:,.0f}`) · Maks `${ew_stealth['stealth_clip_usd']}`/klik\n"
                 f"🧱 *SL Struktural Anti-Sapuan:* `${ew_stealth['structural_sl_mc']:,.0f}` (`-{ew_stealth['structural_sl_pct']}%` bawah lantai Higher-Low) · `{ew_stealth['mev_guard_label']}` (Slippage `<={ew_stealth['max_slippage_pct']}%`)\n\n"
                 f"🔄 *Uji Jual 0.1 & 1.0 SOL:* `LOLOS` (Friksi `{rt_loss_pct}%` | Depth 1 SOL `{depth_loss_pct}%`)\n"
@@ -13171,8 +13664,13 @@ def audit_and_dispatch_candidate(
                     "tp3_mc": tp3_mc,
                     "roundtrip_loss_pct": rt_loss_pct,
                     "est_net_gain_pct": tp1_net_pct,
+                    "seven_pillar_score": seven_p_s2["total_score"],
+                    "pre_pump_probability_pct": seven_p_s2["pre_pump_probability_pct"],
+                    "seven_pillar_active": seven_p_s2["active_pillars_count"],
+                    "seven_pillar_breakdown": seven_p_s2["pillar_breakdown"],
                     "reason": (
                         f"MASUK DI AWAL (<$70k Paus Terverifikasi: {whale_proof_label}) | "
+                        f"{seven_p_s2['summary_badge']} | "
                         f"Max Beli ${early_max_buy_mc:,.0f} -> TP1 ${tp1_mc:,.0f} / TP2 ${tp2_mc:,.0f} / Moonbag ${tp3_mc:,.0f}+"
                     )
                 }
@@ -13416,6 +13914,10 @@ def audit_and_dispatch_candidate(
             f"🕵️‍♂️ *Pantau Exit Insider (MODUS #79):* Memantau `{_ed_cnt}` dompet awal (`>$100` hold `{_ed_tot:.1f}%`). "
             f"Alert keluar otomatis dikirim jika mereka mulai mencicil jual!\n"
         )
+    moonbag_note += (
+        f"🧭 *Konfluensi 7-Pilar Pra-Pump:* `{seven_p_s2['active_pillars_count']}/7 Pilar Aktif` · "
+        f"Skor `{seven_p_s2['total_score']}/100` *(Prob `{seven_p_s2['pre_pump_probability_pct']}%` · `{seven_p_s2['dev_incentive_status']}`)*\n"
+    )
 
     alert_msg = (
         f"{header_title}\n\n"
@@ -13482,8 +13984,12 @@ def audit_and_dispatch_candidate(
             "est_net_gain_pct": net_from_projected_pct,
             "sub100k_crossing_score": int(cross_meta.get("crossing_score") or 0),
             "sub100k_inflow_coverage": float(cross_meta.get("inflow_coverage_ratio") or 0.0),
+            "seven_pillar_score": seven_p_s2["total_score"],
+            "pre_pump_probability_pct": seven_p_s2["pre_pump_probability_pct"],
+            "seven_pillar_active": seven_p_s2["active_pillars_count"],
+            "seven_pillar_breakdown": seven_p_s2["pillar_breakdown"],
             "reason": (
-                f"Lolos {out_alert_title} ({metrics['corridor_name']}) | Max Entry ${max_safe_entry_mc:,.0f} -> "
+                f"Lolos {out_alert_title} ({metrics['corridor_name']}) | {seven_p_s2['summary_badge']} | Max Entry ${max_safe_entry_mc:,.0f} -> "
                 f"TP ${tp_mc:,.0f} (+{net_from_projected_pct}% bersih setelah delay {int(PIPELINE_REACTION_DELAY_SEC)}s & fee riil)"
             )
         }
@@ -14070,18 +14576,54 @@ def run_live_market_scan(engine, config) -> dict:
             and float(intel.get("sniper_pct") or 0.0) < (6.0 if mc_v > 86_000.0 else 8.0)
             and float(intel.get("bundle_hold_pct") or 0.0) < (5.0 if mc_v > 86_000.0 else 6.5)
         )
+        _ed_liq_floor_i = (
+            (6_500.0 if is_eb_pre_grad_i else 7_500.0)
+            if mc_v < 65_000.0
+            else (16_000.0 if mc_v >= 100_000.0 else 10_500.0)
+        )
+        _ed_holders_floor_i = 200 if mc_v >= 100_000.0 else (60 if mc_v < 65_000.0 else 110)
+        _ed_bvol_floor_i = 1_050.0 if mc_v < 65_000.0 else 1_800.0
         is_v10_early_diamond_intake = bool(
             28_000.0 <= mc_v <= 148_000.0
-            and liq_v >= (16_000.0 if mc_v >= 100_000.0 else 11_500.0)
+            and liq_v >= _ed_liq_floor_i
             and float(intel.get("dev_bal_pct") or 0.0) <= 0.45
             and float(intel.get("sniper_pct") or 0.0) < 7.0
             and float(intel.get("insider_pct") or 0.0) < 5.0
             and float(intel.get("bundle_hold_pct") or 0.0) < 6.5
             and float(intel.get("bot_holders_pct") or 0.0) < 28.0
-            and int(intel.get("holder_count") or 0) >= (200 if mc_v >= 100_000.0 else 120)
-            and float(intel.get("organic_score") or 0.0) >= 52.0
+            and int(intel.get("holder_count") or 0) >= _ed_holders_floor_i
+            and float(intel.get("organic_score") or 0.0) >= (48.0 if mc_v < 65_000.0 else 52.0)
             and int(intel.get("buys_m5") or 0) > int(intel.get("sells_m5") or 0)
-            and b_vol_i >= max(1_800.0, s_vol_i * 1.12)
+            and b_vol_i >= max(_ed_bvol_floor_i, s_vol_i * 1.12)
+        )
+        _liq_chg_m5_i = float(intel.get("liq_change_m5") or 0.0)
+        is_stealth_lp_drain_i = bool(_liq_chg_m5_i <= -20.0 and s_vol_i > b_vol_i)
+        is_v11_seven_pillar_intake = bool(
+            not is_stealth_lp_drain_i
+            and (
+                (
+                    -1.5 <= p_m5_i <= 12.0
+                    and net_b_m5_i >= 6
+                    and _liq_chg_m5_i >= -5.0
+                    and b_vol_i >= max(3_000.0, s_vol_i * 1.20)
+                    and float(intel.get("organic_score") or 0.0) >= 52.0
+                    and float(intel.get("dev_bal_pct") or 0.0) <= 0.50
+                    and float(intel.get("sniper_pct") or 0.0) < 8.0
+                    and float(intel.get("insider_pct") or 0.0) < 5.0
+                    and float(intel.get("bundle_hold_pct") or 0.0) < 6.0
+                )
+                or (
+                    _age_mins_i >= 90.0
+                    and mc_v >= 35_000.0
+                    and liq_v >= 14_000.0
+                    and p_m5_i >= 1.5
+                    and _liq_chg_m5_i >= -5.0
+                    and b_vol_i >= max(4_000.0, s_vol_i * 1.22)
+                    and float(intel.get("organic_score") or 0.0) >= 55.0
+                    and int(intel.get("holder_count") or 0) >= 200
+                    and float(intel.get("dev_bal_pct") or 0.0) <= 1.5
+                )
+            )
         )
         has_buy_dominance = (
             int(intel.get("buys_m5") or 0) > int(intel.get("sells_m5") or 0)
@@ -14090,11 +14632,18 @@ def run_live_market_scan(engine, config) -> dict:
             or is_v10_trap_intake
             or is_v10_early_breakout_intake
             or is_v10_early_diamond_intake
+            or is_v11_seven_pillar_intake
         )
         min_mc_intake = 20_000.0 if is_v10_early_breakout_intake else 24_000.0
+        eff_min_liq_floor = min_liq_floor
+        if is_v10_early_diamond_intake:
+            eff_min_liq_floor = min(eff_min_liq_floor, _ed_liq_floor_i)
+        if is_v10_early_breakout_intake:
+            eff_min_liq_floor = min(eff_min_liq_floor, _eb_liq_req_i)
         if (
-            min_mc_intake <= mc_v <= 8_800_000.0
-            and liq_v >= min_liq_floor
+            not is_stealth_lp_drain_i
+            and min_mc_intake <= mc_v <= 8_800_000.0
+            and liq_v >= eff_min_liq_floor
             and int(intel.get("holder_count") or 0) >= 55
             and float(intel.get("dev_bal_pct") or 0.0) <= max_jup_dev_intake
             and bot_ok
@@ -14193,20 +14742,20 @@ def run_live_market_scan(engine, config) -> dict:
             if ch in ("solana", "bsc", "base") and p.get("tokenAddress"):
                 profile_items.append((ch, p["tokenAddress"]))
 
-    # Prioritas Tertinggi V7.9: Pre-DEX Curve, T+0s Graduated, Organic Score 5m, TopTraded+Trending 5m & 1h Rebounds, + MM-Staircase (<$10)
-    ordered_candidates.extend(jup_pre_grad_items[:10])
-    ordered_candidates.extend(jup_graduated_items[:10])
-    ordered_candidates.extend(jup_organic_items[:18])
-    ordered_candidates.extend(jup_trending_items[:20])
-    ordered_candidates.extend(jup_1h_items[:10])
-    ordered_candidates.extend(jup_mm_staircase_items[:10])
+    # Prioritas Tertinggi V11.0 (Zero-Blind-Time 120-Candidate Intake): Pre-DEX Curve, T+0s Graduated, Organic Score 5m, TopTraded+Trending 5m & 1h Rebounds, + MM-Staircase (<$10)
+    ordered_candidates.extend(jup_pre_grad_items[:16])
+    ordered_candidates.extend(jup_graduated_items[:16])
+    ordered_candidates.extend(jup_organic_items[:24])
+    ordered_candidates.extend(jup_trending_items[:26])
+    ordered_candidates.extend(jup_1h_items[:14])
+    ordered_candidates.extend(jup_mm_staircase_items[:14])
     ordered_candidates.extend(_collect_gt(gt_5m_p1, "solana"))
     ordered_candidates.extend(_collect_gt(gt_bsc_5m, "bsc")[:12])
     ordered_candidates.extend(_collect_gt(gt_bsc_trend, "bsc")[:10])
-    ordered_candidates.extend(cto_items[:8])
-    ordered_candidates.extend(latest_boost_items[:14])
+    ordered_candidates.extend(cto_items[:10])
+    ordered_candidates.extend(latest_boost_items[:18])
     ordered_candidates.extend(_collect_gt(gt_ps, "solana")[:14])
-    ordered_candidates.extend(_collect_gt(gt_new, "solana")[:12])
+    ordered_candidates.extend(_collect_gt(gt_new, "solana")[:16])
     ordered_candidates.extend(_collect_gt(gt_base_5m, "base")[:10])
     ordered_candidates.extend(_collect_gt(gt_base_trend, "base")[:8])
     ordered_candidates.extend(profile_items[:12])
@@ -14362,7 +14911,7 @@ def run_live_market_scan(engine, config) -> dict:
 
     # TAHAP 2 (Paralel Terbatas & Hard-Deadline <7.5d): Prioritaskan Utama Bot <$10, Lalu Permata Awal <$118K, Lalu Runner Lainnya!
     alerts_sent = 0
-    if len(stage2_jobs) > MAX_STAGE2_AUDITS_PER_SCAN:
+    if len(stage2_jobs) > 1:
         def _stage2_queue_priority(item):
             _bp_q = item[2]
             _met_q = item[3]
@@ -14392,6 +14941,7 @@ def run_live_market_scan(engine, config) -> dict:
             )
 
         stage2_jobs.sort(key=_stage2_queue_priority)
+    if len(stage2_jobs) > MAX_STAGE2_AUDITS_PER_SCAN:
         deferred_jobs = stage2_jobs[MAX_STAGE2_AUDITS_PER_SCAN:]
         stage2_jobs = stage2_jobs[:MAX_STAGE2_AUDITS_PER_SCAN]
         for def_m, _, def_bp, _ in deferred_jobs:
@@ -14412,7 +14962,7 @@ def run_live_market_scan(engine, config) -> dict:
         s2_pool_res = _run_bounded_tasks(
             s2_pool_tasks,
             hard_timeout_sec=min(3.8, remaining_s2_sec),
-            max_workers=min(6, len(stage2_jobs)),
+            max_workers=min(10, len(stage2_jobs)),
         )
         for (m, _, b_pair, _) in stage2_jobs:
             res = s2_pool_res.get(m)
@@ -14522,7 +15072,7 @@ class handler(BaseHTTPRequestHandler):
             active_mm = _load_active_mm_positions()
             active_peak = _load_active_peak_positions()
             response_data = {
-                "service": "Corridor Sniper V10.6 — Early Insider Diamond-Hold <$150K & Live Exit Monitor (MODUS #79) (<7.5s)",
+                "service": "Corridor Sniper V11.0 — Omni-7-Pillar Pre-Pump & Zero-Blind-Time Scanner (MODUS #80) (<7.5s)",
                 "status": "healthy",
                 "python_version": sys.version.split()[0],
                 "engine_loaded": engine is not None,
@@ -14682,7 +15232,7 @@ class handler(BaseHTTPRequestHandler):
                 compact_scan["skipped_count"] = max(0, len(scan_summary.get("evaluations") or []) - len(notable_evals))
                 compact_scan["evaluations"] = notable_evals[:10]
                 response_data = {
-                    "service": "Corridor Sniper V10.6",
+                    "service": "Corridor Sniper V11.0",
                     "status": "ok",
                     "is_cron_call": is_cron,
                     "timestamp": round(time.time(), 2),
@@ -14690,7 +15240,7 @@ class handler(BaseHTTPRequestHandler):
                 }
             else:
                 response_data = {
-                    "service": "Corridor Sniper V10.6 — Early Insider Diamond-Hold <$150K & Gradual Exit Tracker (MODUS #79) (<7.5s)",
+                    "service": "Corridor Sniper V11.0 — Omni-7-Pillar Pre-Pump & Zero-Blind-Time Scanner (MODUS #80) (<7.5s)",
                     "status": "ready",
                     "is_cron_call": is_cron,
                     "timestamp": time.time(),
@@ -14714,6 +15264,7 @@ class handler(BaseHTTPRequestHandler):
                         "deadzone_6_blocked": "> $8.80M (Area Late-Stage Dekat $10M+ DIBLOKIR, Kawal via Moonbag)"
                     },
                     "execution_and_delay_shields": [
+                        "Modus #80 V11.0 Omni-7-Pillar Pre-Pump & Zero-Blind-Time Architecture: (1) Konfluensi 7 Pilar (Dev Sunk-Cost & Incentive, Multi-Wallet Smart Money Convergence & Stealth Whale Absorption, Buy Pressure & Supply Absorption, Holder & Gradual-Sell Monitor, Trajektori Likuiditas & Stealth LP-Drain Shield, Revival Koin Lama & Early Coil Koin Baru, serta Anti-Manipulasi Fail-Closed); (2) Intake 120 kandidat + 10 audit Stage-2 paralel penuh <7.5d",
                         "Modus #54 V7.4 Cross-MC Fresh Dev Capital Accounting ($36K-$1.5M) & Pre-Flight Dormant Awakening Radar: (1) Memperluas ALERT 1/2 & 2/2 dari plafon lama $250K/3j hingga MC $1.5M & koin lama s/d 365 hari dengan Akuntansi Inkremental Jendela Pasca-Suntikan jika developer baru menyuntikkan modal besar <=15m yang belum kembali; (2) Mendeteksi Koin Lama Sebelum Terbang via Dormant Re-Funding Ignition & Stealth Whale Dry-Seller Coil (sedotan paus organik >=$6.5K/5m & >=2.1x seller kering pada CTO matang sebelum candle panjang muncul) tanpa melonggarkan MODUS #51",
                         "Modus #53 V7.3 Polisi Kripto (Anti-Trik Licik Dev + Tangkap Awal Koin Hangat +300% di MC Rendah): Membuka deteksi dini koin hangat bersih di MC rendah ($32K-$178K) tanpa menghidupkan SELANGKAH DI DEPAN BOT, menurunkan lantai masuk koin bandar modal besar ke $36K, membuka kecepatan ekspansi koin hangat s/d +135%/5m di bawah pengawalan grafik 1-menit, membongkar trik Hukum Kekekalan Suplai Bundler (transfer-split bayangan), dan mendeteksi klaster dompet kembar via Solana RPC",
                         "Modus #52 V7.2 Anti-Movember 5-Layer MM Shield + Nonaktifkan Permanen Alert SELANGKAH DI DEPAN BOT: Menolak koin bot bermodal murah ($299 tokenProfile + 1 pool kelulusan standar), mengecek akun terbesar nyata via Solana RPC getTokenLargestAccounts, memblokir jaringan transfer-split insider >12%, dan memverifikasi candle 1-menit paralel",
@@ -14722,13 +15273,13 @@ class handler(BaseHTTPRequestHandler):
                         "V6.6 Conditional Fresh Capital Injection Gate ($142k-$250k HANYA JIKA LP Hard-SOL aktif >=$4k atau Iklan/Boost >=$999 baru disuntikkan <=15m)",
                         "Modus #50 V6.5 Quad-Oracle Solana Security Failover (GoPlus Solana + Jupiter Audit + Jupiter Shield + Solana RPC saat RugCheck HTTP 400 tumbang)",
                         "Hard-Deadline Anti-Timeout V6.4 (<7.5d di bawah limit 10d Vercel Hobby) + Compact Cron Payload (<2KB untuk cron-job.org)",
-                        "54 Modus Keamanan Anti-Rug, Anti-Wash, & Anti-Fakeout Aktif Penuh"
+                        "80 Modus Keamanan Anti-Rug, Anti-Wash, & Pre-Pump 7-Pilar Aktif Penuh"
                     ]
                 }
 
         else:
             response_data = {
-                "service": "Corridor Sniper V10.6 — Early Insider Diamond-Hold <$150K & Live Exit Monitor (MODUS #79)",
+                "service": "Corridor Sniper V11.0 — Omni-7-Pillar Pre-Pump & Zero-Blind-Time Scanner (MODUS #80)",
                 "status": "ready",
                 "timestamp": time.time(),
                 "endpoints": {
