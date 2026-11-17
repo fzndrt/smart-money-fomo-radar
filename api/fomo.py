@@ -1446,6 +1446,32 @@ def evaluate_seven_pillar_pre_pump_confluence(
     elif is_sybil_unverified_p7:
         veto_reason = f"MODUS #80 Pilar 7 (Klaster Sybil On-Chain): Terdeteksi {graph_insiders} jaringan insider terhubung!"
 
+    if not veto_reason and dev_incentive_status == "RECOVERED_OR_EXITING":
+        is_clean_post_dev_cto = bool(
+            dev_bal_pct <= 0.15
+            and total_holders >= 600
+            and is_supply_absorption
+            and b_usd_5m > s_usd_5m
+            and p_m5 > 0.0
+        )
+        if not is_clean_post_dev_cto:
+            veto_reason = (
+                f"MODUS #81 Pilar 1 (Dev Sudah Balik Modal & Mulai Keluar): "
+                f"Inflow bersih sudah menutup modal sunk-cost dev (${sunk_cost_usd:,.0f}) dengan tekanan jual 5m aktif -> Rawan banting!"
+            )
+
+    if (
+        not veto_reason
+        and eff_mc < 1_060_000.0
+        and b_usd_5m > 0.0
+        and (b_usd_5m + s_usd_5m) >= 2_500.0
+        and s_usd_5m >= (b_usd_5m * 0.96)
+    ):
+        veto_reason = (
+            f"MODUS #81 Pilar 3 (Arus Jual USD Live Dominan): Sell USD 5m (${s_usd_5m:,.0f}) "
+            f"hampir menyamai/melampaui Buy USD (${b_usd_5m:,.0f}) -> Penjual sedang menguras kolam!"
+        )
+
     if not veto_reason and chart_1m_payload is not None:
         c1m_ok, c1m_rsn, _ = _evaluate_1m_chart_police_guard(chart_1m_payload, eff_mc, age_minutes=age_minutes)
         if not c1m_ok:
@@ -1478,6 +1504,11 @@ def evaluate_seven_pillar_pre_pump_confluence(
     }
     active_pillars = [k for k, v in pillar_breakdown.items() if v >= thresholds[k]]
     total_score = min(100, sum(pillar_breakdown.values()))
+    if not veto_reason and bool(ji) and total_score < 42 and len(active_pillars) < 2:
+        veto_reason = (
+            f"MODUS #81 Konfluensi Lemah ({len(active_pillars)}/7 Pilar · Skor {total_score}/100): "
+            "Tidak ada cukup pendorong fundamental/on-chain agar harga terus naik!"
+        )
     prob_pct = 0 if veto_reason else min(98, max(5, int(round(total_score * 0.96))))
 
     return {
@@ -3300,7 +3331,8 @@ def evaluate_jup_onchain_intel_shield(
 
     b_vol_5m = float(jup_intel.get("buy_vol_m5") or 0.0)
     s_vol_5m = float(jup_intel.get("sell_vol_m5") or 0.0)
-    if (b_vol_5m + s_vol_5m) >= 4_000.0 and b_vol_5m > 0.0 and s_vol_5m >= (b_vol_5m * 0.96):
+    min_usd_siphon_vol = 2_500.0 if mc_usd < 150_000.0 else 4_000.0
+    if (b_vol_5m + s_vol_5m) >= min_usd_siphon_vol and b_vol_5m > 0.0 and s_vol_5m >= (b_vol_5m * 0.96):
         return (
             False,
             f"MODUS #47A (True USD Siphon Terdeteksi): Volume Dolar Jual 5m (${s_vol_5m:,.0f}) menelan/menyamai "
@@ -5408,6 +5440,22 @@ def evaluate_market_candidate(
             f"Volume sedang mendingin (Akselerasi {accel_ratio:.2f}x < {min_accel:.2f}x & intensitas M5 rendah)",
             {}
         )
+    if (
+        15.0 <= age_minutes <= 240.0
+        and not is_any_seasoned_cult
+        and not _is_trap_rev_s1
+        and not _is_multiday_rebound_s1
+        and not bool(c_cfg.get("is_sovereign_steady_climber_gateway"))
+        and p_m5 >= 24.0
+        and accel_ratio < 0.78
+        and (vol_m5 / max(1.0, mc)) < 0.12
+    ):
+        return (
+            False,
+            f"MODUS #81 (Lonjakan Tipis Volume Menyusut): Harga M5 melonjak +{p_m5:.1f}% tapi arus volume mendingin "
+            f"({accel_ratio:.2f}x rata-rata 1j) -> Jebakan pancingan likuiditas sebelum banting!",
+            {}
+        )
 
     # 10. Ukuran Tiket M5 + H1 & Verifikasi Komitmen Modal Nyata (Tanpa Diskon Sosmed Gratis!)
     avg_ticket = vol_m5 / max(1, total_m5)
@@ -5666,6 +5714,27 @@ def evaluate_market_candidate(
             f"${c_cfg['corridor_max_mc']:,.0f} pasca lonjakan parabolik (H1 +{p_h1:.0f}%, M5 +{p_m5:.1f}%) -> Rawan beli tepat di puncak!",
             {}
         )
+    if (
+        age_minutes <= 240.0
+        and corridor_progress >= 0.66
+        and p_h1 >= 140.0
+        and p_m5 >= 18.0
+        and not _eff_wall_clear_bypass
+        and not _is_early_breakout_s1
+        and not _is_trap_rev_s1
+        and not _is_multiday_rebound_s1
+        and not is_any_seasoned_cult
+        and (
+            accel_ratio < 0.85
+            or (_j_b5 > 0.0 and _j_s5 >= (_j_b5 * 0.88))
+        )
+    ):
+        return (
+            False,
+            f"MODUS #81 (Kelelahan Ujung Lorong): MC ${mc:,.0f} sudah {corridor_progress*100:.0f}% plafon lorong "
+            f"pasca reli +{p_h1:.0f}% dengan momentum/arus USD melemah -> Dilarang masuk di pucuk!",
+            {}
+        )
     _j_ob5_s1 = float((_jup_s1 or {}).get("buy_organic_vol_m5") or 0.0)
     _j_ob1_s1 = float((_jup_s1 or {}).get("buy_organic_vol_h1") or 0.0)
     _j_b1_s1 = float((_jup_s1 or {}).get("buy_vol_h1") or 0.0)
@@ -5920,6 +5989,12 @@ def evaluate_early_whale_candidate(best_pair: dict, pair_count: int = 1, boost_a
     ew_ji = best_pair.get("jup_intel") if isinstance(best_pair.get("jup_intel"), dict) else {}
     ew_b_usd = float(ew_ji.get("buy_vol_m5") or 0.0)
     ew_s_usd = float(ew_ji.get("sell_vol_m5") or 0.0)
+    if (ew_b_usd + ew_s_usd) >= 2_500.0 and ew_b_usd > 0.0 and ew_s_usd >= (ew_b_usd * 0.95):
+        return (
+            False,
+            f"MODUS #81 (Arus Jual USD Dominan Awal <$70K): Jual USD 5m (${ew_s_usd:,.0f}) hampir menyamai/melampaui Beli (${ew_b_usd:,.0f})!",
+            {}
+        )
     ew_max_p_m5 = (
         110.0
         if ((ew_b_usd >= 9_500.0 and ew_b_usd >= ew_s_usd * 1.25) or avg_ticket_m5 >= 55.0)
@@ -5942,6 +6017,8 @@ def evaluate_early_whale_candidate(best_pair: dict, pair_count: int = 1, boost_a
         return False, f"Dominasi beli 5m kurang kuat untuk Masuk di Awal ({buy_sell_ratio_m5:.2f}x | CVD +{cvd_ratio}%)", {}
     if buy_sell_ratio_h1 < 1.22:
         return False, f"Akumulasi total sejak lahir lemah (Rasio H1 {buy_sell_ratio_h1:.2f}x < 1.22x) -> Rawan distribusi dini", {}
+    if age_minutes >= 12.0 and total_h1 >= 100 and buy_sell_ratio_h1 >= 1.22 and buy_sell_ratio_m5 < (buy_sell_ratio_h1 * 0.65) and (ew_b_usd <= 0.0 or ew_b_usd < (ew_s_usd * 1.25)):
+        return False, f"Momentum beli awal melemah tajam (M5 {buy_sell_ratio_m5:.2f}x < 65% H1 {buy_sell_ratio_h1:.2f}x)", {}
 
     # 7. Tetap kunci rapat Anti-Siphon, Anti-Wash-Loop, & Anti-Bump-Bot Receh!
     vol_to_liq_m5 = vol_m5 / max(1.0, liq)
@@ -7490,6 +7567,38 @@ def verify_mm_staircase_micro_stage2(
                 min_recent_low = min(recent_lows)
                 est_floor_mc = live_mc * (min_recent_low / price_usd)
                 shakeout_floor_mc = round(max(live_mc * 0.64, min(live_mc * 0.76, est_floor_mc * 0.94)), 0)
+            mm_candles_asc = sorted(
+                [c for c in candles if isinstance(c, (list, tuple)) and len(c) >= 6 and float(c[2] or 0.0) > 0.0],
+                key=lambda x: float(x[0] or 0.0),
+            )
+            if len(mm_candles_asc) >= 4:
+                mm_min_l = min((float(r[3] or 0.0) for r in mm_candles_asc if float(r[3] or 0.0) > 0.0), default=0.0)
+                mm_max_h = max((float(r[2] or 0.0) for r in mm_candles_asc), default=0.0)
+                mm_exp = (mm_max_h / mm_min_l) if mm_min_l > 0.0 else 1.0
+                mlo, mlh, mll, mlc, mlv = (
+                    float(mm_candles_asc[-1][1] or 0.0),
+                    float(mm_candles_asc[-1][2] or 0.0),
+                    float(mm_candles_asc[-1][3] or 0.0),
+                    float(mm_candles_asc[-1][4] or 0.0),
+                    float(mm_candles_asc[-1][5] or 0.0),
+                )
+                mrng = mlh - mll
+                if mm_exp >= 2.2 and mll > 0.0 and mrng > 0.0 and (mrng / mll) >= 0.09:
+                    if ((mlh - max(mlo, mlc)) / mrng) >= 0.52 and ((mlh - mlc) / mrng) >= 0.52 and price_usd <= (mlh * 0.985):
+                        return (
+                            False,
+                            "MODUS #81 (MM-Micro Shooting-Star Blow-Off Pucuk): Jarum penolakan atas tajam >=52% di puncak pasca reli -> Tolak distribusi!",
+                            {},
+                        )
+                if mm_exp >= 2.2 and len(mm_candles_asc) >= 5 and mlo > 0.0 and mll > 0.0 and mrng > 0.0:
+                    prev_mvols = [float(r[5] or 0.0) for r in mm_candles_asc[-5:-1] if float(r[5] or 0.0) > 0.0]
+                    avg_mpv = (sum(prev_mvols) / len(prev_mvols)) if prev_mvols else 0.0
+                    if avg_mpv > 0.0 and mlv >= max(18_000.0, avg_mpv * 2.35) and mlc <= (mlo * 1.02) and ((mlc - mll) / mrng) < 0.48:
+                        return (
+                            False,
+                            "MODUS #81 (MM-Micro Divergensi Klimaks Volume): Volume meledak >=2.35x tapi harga gagal tutup tinggi -> Distribusi tersembunyi!",
+                            {},
+                        )
 
     # MODUS #52C + #53D (V7.3 — Mikrostruktur 1-Menit Anti-Rollover & Anti-Jarum Uji-Rug):
     ok_1m_mm, rsn_1m_mm, _ = _evaluate_1m_chart_police_guard(chart_1m_payload, live_mc)
@@ -10380,6 +10489,22 @@ def evaluate_anti_countertrade_shakeout_shield(
                 "di 4 candle terakhir -> Bot dev otomatis memukul setiap pembeli luar yang masuk!",
                 {},
             )
+        _spot_px_ct = float((best_pair or {}).get("priceUsd") or 0.0)
+        _fresh_last_blowoff_slam = bool(
+            last_bar_is_slam
+            and not _clean_base_reclaim_31a
+            and _last_l4 > 0.0
+            and (_last_rng4 / _last_l4) >= 0.14
+            and ((_last_h4 - max(_last_o4, _last_c4)) / _last_rng4) >= 0.56
+            and _last_c4 <= (_last_l4 + 0.38 * _last_rng4)
+            and (_spot_px_ct <= 0.0 or _spot_px_ct <= (_last_h4 * 0.965))
+        )
+        if _fresh_last_blowoff_slam:
+            return (
+                False,
+                "MODUS #81 (Blow-Off Slam Candle Terakhir): Candle terbaru baru saja memompa dan langsung dibanting ekor atas tajam (>=56%) -> Rawan jatuh lanjutan!",
+                {},
+            )
 
         # MODUS #32 + #53B: Anti-Impulse-Chase vs Hot Early 1m-Staircase Runner (+300% Trajectory)
         c3 = candles[-3:]
@@ -10524,6 +10649,7 @@ def classify_early_continuation_dna(
         candles = [r for r in raw_list if isinstance(r, (list, tuple)) and len(r) >= 6 and float(r[4] or 0.0) > 0.0]
         candles.sort(key=lambda x: float(x[0] or 0.0))
 
+    first_low = 0.0
     if len(candles) >= 3 and age_minutes <= 240.0 and mc < 315_000.0:
         first_open = float(candles[0][1] or candles[0][4] or 0.0)
         first_low = min(float(r[3] or 0.0) for r in candles[:2] if float(r[3] or 0.0) > 0.0) or first_open
@@ -10557,6 +10683,8 @@ def classify_early_continuation_dna(
                 {}
             )
 
+    if len(candles) >= 3:
+        last_c_dna = float(candles[-1][4] or 0.0)
         c3 = candles[-3:]
         h0, h1, h2 = float(c3[0][2] or 0.0), float(c3[1][2] or 0.0), float(c3[2][2] or 0.0)
         cl0, cl1, cl2 = float(c3[0][4] or 0.0), float(c3[1][4] or 0.0), float(c3[2][4] or 0.0)
@@ -10568,22 +10696,25 @@ def classify_early_continuation_dna(
                 {}
             )
 
-        c4 = candles[-4:]
-        max_c4_close = max(float(r[4] or 0.0) for r in c4)
-        greens_c4 = [float(r[5] or 0.0) for r in c4 if float(r[4] or 0.0) >= float(r[1] or 0.0)]
-        reds_c4 = [float(r[5] or 0.0) for r in c4 if float(r[4] or 0.0) < float(r[1] or 0.0)]
-        if len(reds_c4) >= 2 and greens_c4 and last_c < (max_c4_close * 0.93):
-            avg_r = sum(reds_c4) / len(reds_c4)
-            avg_g = sum(greens_c4) / len(greens_c4)
-            if avg_r >= max(8_000.0, avg_g * 1.35):
-                return (
-                    False,
-                    f"Pasti Tidak Naik Lagi (Red Dump Expansion): Rata-rata volume merah (${avg_r:,.0f}) membengkak "
-                    f">=1.35x volume hijau (${avg_g:,.0f}) saat koreksi!",
-                    {}
-                )
-    else:
-        first_low = 0.0
+        if mc < 5_000_000.0:
+            c4 = candles[-4:]
+            max_c4_close = max(float(r[4] or 0.0) for r in c4)
+            greens_c4 = [float(r[5] or 0.0) for r in c4 if float(r[4] or 0.0) >= float(r[1] or 0.0)]
+            reds_c4 = [float(r[5] or 0.0) for r in c4 if float(r[4] or 0.0) < float(r[1] or 0.0)]
+            last_bar_green_dna = float(c4[-1][4] or 0.0) > float(c4[-1][1] or 0.0)
+            last_bar_vol_dna = float(c4[-1][5] or 0.0)
+            if len(reds_c4) >= 2 and greens_c4 and last_c_dna < (max_c4_close * 0.93):
+                avg_r = sum(reds_c4) / len(reds_c4)
+                avg_g = sum(greens_c4) / len(greens_c4)
+                is_strict_new_zone = (age_minutes <= 240.0 and mc < 315_000.0)
+                is_strong_reclaim_bar = (not is_strict_new_zone) and last_bar_green_dna and last_bar_vol_dna >= (avg_r * 0.95)
+                if avg_r >= max(8_000.0, avg_g * 1.35) and not is_strong_reclaim_bar:
+                    return (
+                        False,
+                        f"Pasti Tidak Naik Lagi (Red Dump Expansion): Rata-rata volume merah (${avg_r:,.0f}) membengkak "
+                        f">=1.35x volume hijau (${avg_g:,.0f}) saat koreksi!",
+                        {}
+                    )
 
     reasons = []
     if is_early_diamond_conviction:
@@ -11197,7 +11328,7 @@ def evaluate_ohlcv_ath_trap(
     if (
         not is_15m_or_higher_tf
         and age_minutes <= 360.0
-        and 165_000.0 <= current_mc_usd < 1_080_000.0
+        and 65_000.0 <= current_mc_usd < 1_080_000.0
         and len(valid_candles) >= 5
     ):
         sess_lows = [float(r[3] or 0.0) for r in valid_candles if float(r[3] or 0.0) > 0.0]
@@ -11218,7 +11349,7 @@ def evaluate_ohlcv_ath_trap(
             or (415_000.0 <= current_mc_usd <= 525_000.0)
             or (750_000.0 <= current_mc_usd <= 1_060_000.0)
         )
-        if sess_exp_mult >= 5.2 and (
+        if current_mc_usd >= 165_000.0 and sess_exp_mult >= 5.2 and (
             (near_psych_ceiling and last_pump_pct >= 16.0)
             or (current_mc_usd >= 360_000.0 and last_body_pct >= 22.0)
             or (165_000.0 <= current_mc_usd < 360_000.0 and last_body_pct >= 24.0)
@@ -11228,6 +11359,54 @@ def evaluate_ohlcv_ath_trap(
                 f"Jebakan Pucuk Klimaks Intraday: Harga sudah terbang {sess_exp_mult:.1f}x dari dasar (${current_mc_usd:,.0f}) ke area jenuh distribusi -> Telat beli di puncak!",
                 {"ath_drawdown_pct": 0.0, "session_expansion_mult": round(sess_exp_mult, 2)},
             )
+        if (
+            65_000.0 <= current_mc_usd < 165_000.0
+            and age_minutes > 12.0
+            and not has_heavy_dev_capital
+            and not is_early_graduation_breakout
+            and sess_exp_mult >= 4.8
+            and last_body_pct >= 28.0
+        ):
+            return (
+                False,
+                f"MODUS #81 (Klimaks Parabolik Dini <$165K): Harga sudah melesat {sess_exp_mult:.1f}x dari dasar dengan bodi puncak +{last_body_pct:.0f}% -> Jangan kejar di ujung klimaks!",
+                {"ath_drawdown_pct": 0.0, "session_expansion_mult": round(sess_exp_mult, 2)},
+            )
+
+    if len(valid_candles) >= 4 and not is_scalper_trap_reversal and not is_early_graduation_breakout:
+        _all_lows_p = [float(r[3] or 0.0) for r in valid_candles if float(r[3] or 0.0) > 0.0]
+        _min_low_p = min(_all_lows_p) if _all_lows_p else 0.0
+        _exp_mult_p = (max(max_high_price, current_price_usd) / _min_low_p) if _min_low_p > 0.0 else 1.0
+        _lb_p = valid_candles[-1]
+        _lo_p, _lh_p, _ll_p, _lc_p, _lv_p = (
+            float(_lb_p[1] or 0.0),
+            float(_lb_p[2] or 0.0),
+            float(_lb_p[3] or 0.0),
+            float(_lb_p[4] or 0.0),
+            float(_lb_p[5] or 0.0),
+        )
+        _rng_p = _lh_p - _ll_p
+        if _exp_mult_p >= 2.2 and _ll_p > 0.0 and _rng_p > 0.0:
+            if (
+                (_rng_p / _ll_p) >= 0.08
+                and ((_lh_p - max(_lo_p, _lc_p)) / _rng_p) >= 0.50
+                and ((_lh_p - _lc_p) / _rng_p) >= 0.50
+                and current_price_usd <= (_lh_p * 0.985)
+            ):
+                return (
+                    False,
+                    f"MODUS #81 (Shooting-Star Blow-Off Puncak): Ekor penolakan atas >=50% & tutup lemah setelah reli {_exp_mult_p:.1f}x -> Penjual besar membuang ke FOMO!",
+                    {"ath_drawdown_pct": round(((max_high_price - current_price_usd) / max(1e-12, max_high_price)) * 100.0, 1) if max_high_price > current_price_usd else 0.0},
+                )
+            if not is_15m_or_higher_tf and len(valid_candles) >= 5 and _lo_p > 0.0:
+                _prev_vols_p = [float(r[5] or 0.0) for r in valid_candles[-5:-1] if float(r[5] or 0.0) > 0.0]
+                _avg_pv_p = (sum(_prev_vols_p) / len(_prev_vols_p)) if _prev_vols_p else 0.0
+                if _avg_pv_p > 0.0 and _lv_p >= max(18_000.0, _avg_pv_p * 2.35) and _lc_p <= (_lo_p * 1.022) and ((_lc_p - _ll_p) / _rng_p) < 0.48:
+                    return (
+                        False,
+                        f"MODUS #81 (Wyckoff Effort-vs-Result Klimaks): Volume meledak ${ _lv_p:,.0f} (>=2.35x) tapi harga tertahan/tutup di paruh bawah -> Penyerapan distribusi bandar!",
+                        {"ath_drawdown_pct": round(((max_high_price - current_price_usd) / max(1e-12, max_high_price)) * 100.0, 1) if max_high_price > current_price_usd else 0.0},
+                    )
 
     if max_high_price <= 0.0 or current_price_usd >= max_high_price:
         if is_scalper_trap_reversal:
@@ -11385,6 +11564,24 @@ def evaluate_ohlcv_ath_trap(
                 f"(~${est_ath_mc:,.0f}) dengan volume buangan merah mendominasi (${red_vol:,.0f} vs hijau ${green_vol:,.0f})!",
                 {"ath_drawdown_pct": ath_drawdown_pct, "est_ath_mc": est_ath_mc}
             )
+
+    if len(valid_candles) >= 4 and current_mc_usd < 2_500_000.0 and not is_scalper_trap_reversal:
+        _loc4 = valid_candles[-4:]
+        _loc4_h = max(float(r[2] or 0.0) for r in _loc4)
+        _loc4_last_o = float(_loc4[-1][1] or 0.0)
+        _loc4_last_c = float(_loc4[-1][4] or 0.0)
+        if _loc4_h > current_price_usd and ((_loc4_h - current_price_usd) / _loc4_h) >= 0.12 and _loc4_last_c < _loc4_last_o:
+            _loc4_rc = sum(1 for r in _loc4 if float(r[4] or 0.0) < float(r[1] or 0.0))
+            _loc4_rv = sum(float(r[5] or 0.0) for r in _loc4 if float(r[4] or 0.0) < float(r[1] or 0.0))
+            _loc4_gv = sum(float(r[5] or 0.0) for r in _loc4 if float(r[4] or 0.0) >= float(r[1] or 0.0))
+            if _loc4_rc >= 2 and _loc4_rv >= max(12_000.0, _loc4_gv * 1.45):
+                _loc_dd = ((_loc4_h - current_price_usd) / _loc4_h) * 100.0
+                return (
+                    False,
+                    f"MODUS #81 (Rollover Waterfall Lokal Lintas-Usia): Harga tergelincir -{_loc_dd:.1f}% dari puncak lokal "
+                    f"dengan buangan merah aktif (${_loc4_rv:,.0f} vs hijau ${_loc4_gv:,.0f})!",
+                    {"ath_drawdown_pct": ath_drawdown_pct, "est_ath_mc": est_ath_mc}
+                )
 
     # PERISAI V3.3 (#26B — Kasus Live $urmom 16:53-16:54 WIB Jarum $336.5k Tembus Plafon $315k Lalu Anjlok):
     if age_minutes <= 360.0 and current_mc_usd < 1_080_000.0 and not has_birth_discovery_pullback and not is_scalper_trap_reversal:
@@ -11633,6 +11830,16 @@ def verify_early_whale_stage2(
                     f"Tekanan jual merah awal terlalu besar (${red_vol:,.0f} merah vs ${green_vol:,.0f} hijau)",
                     {}
                 )
+        if len(valid_candles) >= 4:
+            ew_lows = [float(r[3] or 0.0) for r in valid_candles if float(r[3] or 0.0) > 0.0]
+            ew_min_l = min(ew_lows) if ew_lows else 0.0
+            ew_exp = (current_price_usd / ew_min_l) if ew_min_l > 0.0 else 1.0
+            ew_lb = valid_candles[-1]
+            elo, elh, ell, elc = float(ew_lb[1] or 0.0), float(ew_lb[2] or 0.0), float(ew_lb[3] or 0.0), float(ew_lb[4] or 0.0)
+            erng = elh - ell
+            if ew_exp >= 2.0 and ell > 0.0 and erng > 0.0 and (erng / ell) >= 0.10:
+                if ((elh - max(elo, elc)) / erng) >= 0.52 and ((elh - elc) / erng) >= 0.52 and current_price_usd <= (elh * 0.985):
+                    return False, "MODUS #81 (Shooting-Star Blow-Off Awal): Ekor penolakan atas >=52% di pucuk awal -> Hindari pucuk semu!", {}
 
     return True, "TERVERIFIKASI PAUS POMPA DINI (<$70K)", {
         "creator_tokens_cnt": creator_tokens_cnt,
@@ -12530,8 +12737,7 @@ def audit_and_dispatch_candidate(
         s2_tasks["jup_mm"] = (fetch_jup_token_organic_intel, (mint, 1.8))
     if not is_evm_chain and (
         is_mm_micro_lane
-        or mc < 185_000.0
-        or (cand_age_mins <= 180.0 and mc <= 650_000.0)
+        or mc <= 650_000.0
         or cand_age_mins < 20.0
         or is_pre_pump_s2
         or is_trap_rev_s2
@@ -13368,8 +13574,7 @@ def audit_and_dispatch_candidate(
     # MODUS #53D (V7.3 + V9.0 + V10.0): Perisai Grafik 1-Menit & Kekekalan Suplai Bundler untuk Masuk Awal & Intraday <=$650K!
     c1m_meta_std = {"is_clean_1m_staircase": False}
     if not is_evm_chain and (
-        mc < 185_000.0
-        or (cand_age_mins <= 180.0 and mc <= 650_000.0)
+        mc <= 650_000.0
         or cand_age_mins < 20.0
         or is_pre_pump_s2
         or is_trap_rev_s2
@@ -13533,7 +13738,7 @@ def audit_and_dispatch_candidate(
         rug_data=rug_data,
         holder_meta=holder_meta,
         ohlcv_payload=ohlcv_data,
-        chart_1m_payload=None,
+        chart_1m_payload=chart_1m_data,
         rt_loss_pct=rt_loss_pct,
         depth_loss_pct=depth_loss_pct,
         metrics=metrics,
@@ -15232,7 +15437,7 @@ class handler(BaseHTTPRequestHandler):
                 compact_scan["skipped_count"] = max(0, len(scan_summary.get("evaluations") or []) - len(notable_evals))
                 compact_scan["evaluations"] = notable_evals[:10]
                 response_data = {
-                    "service": "Corridor Sniper V11.0",
+                    "service": "Corridor Sniper V11.1",
                     "status": "ok",
                     "is_cron_call": is_cron,
                     "timestamp": round(time.time(), 2),
@@ -15240,7 +15445,7 @@ class handler(BaseHTTPRequestHandler):
                 }
             else:
                 response_data = {
-                    "service": "Corridor Sniper V11.0 — Omni-7-Pillar Pre-Pump & Zero-Blind-Time Scanner (MODUS #80) (<7.5s)",
+                    "service": "Corridor Sniper V11.1 — Anti-Peak, Anti-Distribution & 7-Pillar Pre-Pump Engine (MODUS #81) (<7.5s)",
                     "status": "ready",
                     "is_cron_call": is_cron,
                     "timestamp": time.time(),
@@ -15264,6 +15469,7 @@ class handler(BaseHTTPRequestHandler):
                         "deadzone_6_blocked": "> $8.80M (Area Late-Stage Dekat $10M+ DIBLOKIR, Kawal via Moonbag)"
                     },
                     "execution_and_delay_shields": [
+                        "Modus #81 V11.1 Holistic Anti-Peak & Forward-Upside Confluence Guard: (1) Veto Shooting-Star Blow-Off Puncak & Wyckoff Effort-vs-Result Klimaks lintas-jalur termasuk ATH & MM-Micro; (2) Perluasan Klimaks Parabolik Dini $65K-$165K & Kelelahan Ujung Lorong/Volume Menyusut; (3) Penegakan Penuh Konfluensi 7-Pilar (Veto Dev RECOVERED_OR_EXITING, USD Siphon Live, & Konfluensi Lemah); (4) Penutupan Blindspot Koin Lama/Mid-Cap (3-Bar Bleed, Red Dump Expansion, Waterfall Lokal Lintas-Usia, & Grafik 1m s/d $650K)",
                         "Modus #80 V11.0 Omni-7-Pillar Pre-Pump & Zero-Blind-Time Architecture: (1) Konfluensi 7 Pilar (Dev Sunk-Cost & Incentive, Multi-Wallet Smart Money Convergence & Stealth Whale Absorption, Buy Pressure & Supply Absorption, Holder & Gradual-Sell Monitor, Trajektori Likuiditas & Stealth LP-Drain Shield, Revival Koin Lama & Early Coil Koin Baru, serta Anti-Manipulasi Fail-Closed); (2) Intake 120 kandidat + 10 audit Stage-2 paralel penuh <7.5d",
                         "Modus #54 V7.4 Cross-MC Fresh Dev Capital Accounting ($36K-$1.5M) & Pre-Flight Dormant Awakening Radar: (1) Memperluas ALERT 1/2 & 2/2 dari plafon lama $250K/3j hingga MC $1.5M & koin lama s/d 365 hari dengan Akuntansi Inkremental Jendela Pasca-Suntikan jika developer baru menyuntikkan modal besar <=15m yang belum kembali; (2) Mendeteksi Koin Lama Sebelum Terbang via Dormant Re-Funding Ignition & Stealth Whale Dry-Seller Coil (sedotan paus organik >=$6.5K/5m & >=2.1x seller kering pada CTO matang sebelum candle panjang muncul) tanpa melonggarkan MODUS #51",
                         "Modus #53 V7.3 Polisi Kripto (Anti-Trik Licik Dev + Tangkap Awal Koin Hangat +300% di MC Rendah): Membuka deteksi dini koin hangat bersih di MC rendah ($32K-$178K) tanpa menghidupkan SELANGKAH DI DEPAN BOT, menurunkan lantai masuk koin bandar modal besar ke $36K, membuka kecepatan ekspansi koin hangat s/d +135%/5m di bawah pengawalan grafik 1-menit, membongkar trik Hukum Kekekalan Suplai Bundler (transfer-split bayangan), dan mendeteksi klaster dompet kembar via Solana RPC",
@@ -15273,13 +15479,13 @@ class handler(BaseHTTPRequestHandler):
                         "V6.6 Conditional Fresh Capital Injection Gate ($142k-$250k HANYA JIKA LP Hard-SOL aktif >=$4k atau Iklan/Boost >=$999 baru disuntikkan <=15m)",
                         "Modus #50 V6.5 Quad-Oracle Solana Security Failover (GoPlus Solana + Jupiter Audit + Jupiter Shield + Solana RPC saat RugCheck HTTP 400 tumbang)",
                         "Hard-Deadline Anti-Timeout V6.4 (<7.5d di bawah limit 10d Vercel Hobby) + Compact Cron Payload (<2KB untuk cron-job.org)",
-                        "80 Modus Keamanan Anti-Rug, Anti-Wash, & Pre-Pump 7-Pilar Aktif Penuh"
+                        "81 Modus Keamanan Anti-Rug, Anti-Pucuk, Anti-Wash, & Pre-Pump 7-Pilar Aktif Penuh"
                     ]
                 }
 
         else:
             response_data = {
-                "service": "Corridor Sniper V11.0 — Omni-7-Pillar Pre-Pump & Zero-Blind-Time Scanner (MODUS #80)",
+                "service": "Corridor Sniper V11.1 — Anti-Peak, Anti-Distribution & 7-Pillar Pre-Pump Engine (MODUS #81)",
                 "status": "ready",
                 "timestamp": time.time(),
                 "endpoints": {
