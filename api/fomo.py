@@ -534,6 +534,8 @@ def _extract_jup_pool_intel(pool_node: dict, stage_tag: str = "dex") -> tuple[st
         "bundle_native_vol_sol": float(b_stats.get("totalNativeVol") or 0.0),
         "bundle_ath_pct": float(b_stats.get("holdingPctATH") or 0.0),
         "has_socials": bool(ba.get("twitter") or ba.get("website") or ba.get("telegram") or (ba.get("ctLikes") or 0) > 0),
+        "has_organic_vol_m5_telemetry": ("buyOrganicVolume" in st5),
+        "has_organic_vol_h1_telemetry": ("buyOrganicVolume" in st1h),
     }
     return mint, intel
 
@@ -1857,7 +1859,29 @@ def _is_pre_pump_silent_coil(
     vol_m5 = max(float(vols.get("m5") or 0.0), float(ji.get("vol_m5") or 0.0))
     vol_h1 = max(vol_m5, float(vols.get("h1") or 0.0), float(ji.get("vol_h1") or 0.0))
     vol_h24 = max(vol_h1, float(vols.get("h24") or 0.0), float(ji.get("vol_h24") or 0.0))
-    if 75.0 <= age_minutes <= 1440.0 and vol_h24 > (vol_h1 * 1.5) and vol_h24 >= (mc_usd * 5.0):
+    _coil_b_h1 = float(ji.get("buy_vol_h1") or 0.0)
+    _coil_ob_h1 = float(ji.get("buy_organic_vol_h1") or 0.0)
+    _coil_has_real_org_h1 = (
+        ("buy_organic_vol_h1" not in ji)
+        or _coil_b_h1 <= 0.0
+        or (_coil_ob_h1 / max(1.0, _coil_b_h1)) >= 0.18
+    )
+    _is_active_wave2_base_coil = bool(
+        dev_bal <= 0.15
+        and float(ji.get("sniper_pct") or 0.0) < 5.0
+        and float(ji.get("insider_pct") or 0.0) < 3.0
+        and org_sc >= 64.0
+        and h_cnt >= 600
+        and p_h1 >= 15.0
+        and p_h6 >= 40.0
+        and _coil_has_real_org_h1
+    )
+    if (
+        75.0 <= age_minutes <= 1440.0
+        and vol_h24 > (vol_h1 * 1.5)
+        and vol_h24 >= (mc_usd * 5.0)
+        and not _is_active_wave2_base_coil
+    ):
         return False, {}
 
     tx_m5 = (best_pair.get("txns") or {}).get("m5") or {}
@@ -1890,6 +1914,7 @@ def _is_pre_pump_silent_coil(
 
     return True, {
         "is_pre_pump_silent_coil": True,
+        "is_active_wave2_base_coil": _is_active_wave2_base_coil,
         "smart_money_overlay": sm_overlay,
         "amm_coverage": amm_meta,
         "badge": badge,
@@ -3375,6 +3400,31 @@ def evaluate_jup_onchain_intel_shield(
                 f"MODUS #47B/#51 (Kawanan Dompet Bot On-Chain): {bot_pct:.1f}% pemegang terdeteksi sebagai dompet bot (>=28%{cap_note})!"
             )
 
+    _has_org_sc_key = ("organic_score" in jup_intel) or bool(jup_intel.get("has_organic_telemetry"))
+    _org_sc_val = float(jup_intel.get("organic_score") or 0.0)
+    _b_vol_h1 = float(jup_intel.get("buy_vol_h1") or 0.0)
+    _b_org_h1 = float(jup_intel.get("buy_organic_vol_h1") or 0.0)
+    _b_org_5m = float(jup_intel.get("buy_organic_vol_m5") or 0.0)
+    _has_org_vol_h1_key = ("buy_organic_vol_h1" in jup_intel) and bool(jup_intel.get("has_organic_vol_h1_telemetry", True))
+    _has_org_vol_m5_key = ("buy_organic_vol_m5" in jup_intel) and bool(jup_intel.get("has_organic_vol_m5_telemetry", True))
+    _org_share_h1_pct = ((_b_org_h1 / _b_vol_h1) * 100.0) if (_has_org_vol_h1_key and _b_vol_h1 > 0.0) else None
+    _org_share_5m_pct = ((_b_org_5m / b_vol_5m) * 100.0) if (_has_org_vol_m5_key and b_vol_5m > 0.0) else None
+
+    _dev_mints_j = int(jup_intel.get("dev_mints") or 0)
+    _bundle_ath_j = float(jup_intel.get("bundle_ath_pct") or 0.0)
+    _icon_reused_j = bool(jup_intel.get("icon_reused"))
+    if (
+        mc_usd >= 350_000.0
+        and bot_pct >= 30.0
+        and (_icon_reused_j or _dev_mints_j >= 300 or _bundle_ath_j >= 12.0)
+        and not (_org_sc_val >= 75.0 and _org_share_h1_pct is not None and _org_share_h1_pct >= 20.0)
+    ):
+        return (
+            False,
+            f"MODUS #83A (Kawanan Bot Pabrik Daur-Ulang Mid/High-Cap): {bot_pct:.1f}% dompet bot + stempel pabrik "
+            f"(iconReused={_icon_reused_j}, devMints={_dev_mints_j}, bundleATH={_bundle_ath_j:.1f}%) di MC ${mc_usd:,.0f} -> Distribusi terkoordinasi!",
+        )
+
     p_created_jup = (best_pair or {}).get("pairCreatedAt")
     age_jup_m = max(1.0, ((time.time() * 1000.0) - float(p_created_jup)) / 60000.0) if p_created_jup else 15.0
     liq_jup_s = float(((best_pair or {}).get("liquidity") or {}).get("usd") or jup_intel.get("liq") or 0.0)
@@ -3442,15 +3492,10 @@ def evaluate_jup_onchain_intel_shield(
     # V10.3 MODUS #76A (Spoofed Organic / Botnet Wash Volume Shield — Kasus $SOLCAPS):
     # Bot pencuci volume sering menyebar transfer ke ratusan dompet baru sehingga `botHoldersPercentage` tampak 0.01%,
     # padahal `organicScore` ~ 0 & `buyOrganicVolume` < 2-8% dari total `buyVolume` (mis. $4.6K organik dari $241K total).
+    _has_org_vol_h1_76a = _has_org_vol_h1_key or bool(jup_intel.get("has_organic_telemetry"))
+    _has_org_vol_m5_76a = _has_org_vol_m5_key or bool(jup_intel.get("has_organic_telemetry"))
     if (not has_heavy_dev_capital and mc_usd < 1_080_000.0) or mc_usd < 350_000.0:
-        _has_org_sc_key = ("organic_score" in jup_intel) or bool(jup_intel.get("has_organic_telemetry"))
-        _org_sc_val = float(jup_intel.get("organic_score") or 0.0)
-        _b_vol_h1 = float(jup_intel.get("buy_vol_h1") or 0.0)
-        _b_org_h1 = float(jup_intel.get("buy_organic_vol_h1") or 0.0)
-        _b_org_5m = float(jup_intel.get("buy_organic_vol_m5") or 0.0)
-        _has_org_vol_h1_key = ("buy_organic_vol_h1" in jup_intel) or bool(jup_intel.get("has_organic_telemetry"))
-        _has_org_vol_m5_key = ("buy_organic_vol_m5" in jup_intel) or bool(jup_intel.get("has_organic_telemetry"))
-        if (not has_heavy_dev_capital) and _has_org_sc_key and _has_org_vol_h1_key and _b_vol_h1 >= 60_000.0 and _org_sc_val < 25.0:
+        if (not has_heavy_dev_capital) and _has_org_sc_key and _has_org_vol_h1_76a and _b_vol_h1 >= 60_000.0 and _org_sc_val < 25.0:
             _org_share_h1 = (_b_org_h1 / _b_vol_h1) * 100.0
             if _org_share_h1 < 8.0:
                 return (
@@ -3458,7 +3503,7 @@ def evaluate_jup_onchain_intel_shield(
                     f"MODUS #76A (Volume Cuci Botnet / Organik Palsu H1): Dari ${_b_vol_h1:,.0f} beli 1j hanya "
                     f"${_b_org_h1:,.0f} ({_org_share_h1:.1f}%) yang organik (OrganicScore {_org_sc_val:.1f} < 25) -> Jebakan wash-pump!",
                 )
-        if _has_org_sc_key and _has_org_vol_m5_key and b_vol_5m >= 6_000.0 and _org_sc_val < 30.0:
+        if _has_org_sc_key and _has_org_vol_m5_76a and b_vol_5m >= 6_000.0 and _org_sc_val < 30.0:
             _org_share_5m = (_b_org_5m / max(1.0, b_vol_5m)) * 100.0
             if _org_share_5m < 12.0:
                 return (
@@ -3467,7 +3512,7 @@ def evaluate_jup_onchain_intel_shield(
                     f"${_b_org_5m:,.0f} ({_org_share_5m:.1f}%) yang organik (OrganicScore {_org_sc_val:.1f} < 30) -> Wash volume semu!",
                 )
         if (
-            bool(jup_intel.get("icon_reused"))
+            _icon_reused_j
             and int(jup_intel.get("bundle_count") or 0) >= 5
             and _has_org_sc_key
             and _org_sc_val < 35.0
@@ -3477,6 +3522,37 @@ def evaluate_jup_onchain_intel_shield(
                 f"MODUS #76A (Stempel Pabrik Daur Ulang + Multi-Bundle): Ikon daur ulang dengan {int(jup_intel.get('bundle_count') or 0)} bundle "
                 f"& OrganicScore rendah ({_org_sc_val:.1f}) tanpa modal dev -> Rawan rug pull!",
             )
+
+    # V11.3 MODUS #83A (Volume Semu Organik Palsu Lintas-MC & Lintas-Skor Organik — Kasus $DCI $1.34M & $ANT $381K):
+    # Meskipun organicScore ~68 & MC >$350K/$1M, bila pangsa beli USD organik asli H1 < 8.5% DAN M5 < 12%
+    # (atau 5m >= $3.5K dengan < 3% beli organik asli), itu mesin bot mendorong harga tepat di puncak distribusi!
+    _is_clean_pre_grad_jup = bool(jup_intel.get("is_bonding_curve_pre_grad")) and _org_sc_val >= 65.0
+    if (
+        not _is_clean_pre_grad_jup
+        and _has_org_vol_h1_key
+        and _b_vol_h1 >= 45_000.0
+        and _org_share_h1_pct is not None
+        and _org_share_h1_pct < 8.5
+        and (_org_share_5m_pct is None or _org_share_5m_pct < 12.0)
+    ):
+        return (
+            False,
+            f"MODUS #83A (Volume Semu Organik Palsu H1 Lintas-MC): Dari ${_b_vol_h1:,.0f} beli 1j hanya "
+            f"${_b_org_h1:,.0f} ({_org_share_h1_pct:.1f}%) yang organik asli (OrganicScore {_org_sc_val:.1f} semu) -> Jebakan beli pucuk distribusi bot!",
+        )
+    if (
+        not _is_clean_pre_grad_jup
+        and _has_org_vol_m5_key
+        and b_vol_5m >= 3_500.0
+        and _org_share_5m_pct is not None
+        and _org_share_5m_pct < 3.0
+        and (int(jup_intel.get("traders_m5") or 0) >= 35 or _b_vol_h1 >= 45_000.0)
+    ):
+        return (
+            False,
+            f"MODUS #83A (Lonjakan Beli 5m 97%+ Non-Organik): Dari ${b_vol_5m:,.0f} beli 5m hanya "
+            f"${_b_org_5m:,.0f} ({_org_share_5m_pct:.1f}%) yang organik asli -> Mesin bot mendorong harga di pucuk!",
+        )
 
     return True, "Telemetri USD & Audit Jupiter Bersih"
 
@@ -3893,24 +3969,51 @@ def _evaluate_wall_absorption_override(
         and (net_inflow_5m > 0 or float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.20)
     )
 
+    _w2_b_h1 = float(jup_intel.get("buy_vol_h1") or 0.0) if jup_intel else 0.0
+    _w2_ob_h1 = float(jup_intel.get("buy_organic_vol_h1") or 0.0) if jup_intel else 0.0
+    _w2_real_org_h1 = (
+        not jup_intel
+        or ("buy_organic_vol_h1" not in jup_intel)
+        or _w2_b_h1 <= 0.0
+        or (_w2_ob_h1 / max(1.0, _w2_b_h1)) >= 0.12
+    )
     is_wave2_retest_consolidation_gateway = bool(
         (c_id in (2, 3))
-        and (185_000.0 < mc <= 215_000.0 or 315_000.0 < mc <= 340_000.0)
         and jup_intel
-        and vol_m5 >= max(12_000.0, mc * 0.045)
-        and float(jup_intel.get("buy_vol_m5") or 0.0) >= max(7_500.0, mc * 0.028)
-        and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.35
         and float(jup_intel.get("sniper_pct") or 0.0) < 5.5
         and float(jup_intel.get("insider_pct") or 0.0) < 4.0
         and liq >= 25_000.0
         and ((liq / max(1.0, mc)) * 100.0) >= 10.0
-        and (4.5 <= p_m5 <= 28.0)
         and (p_h1 >= 15.0 or p_h6 >= 20.0)
         and b_m5 > s_m5
         and (b_m5 / float(max(1, s_m5))) >= 1.25
         and org_score >= 62.0
-        and int(jup_intel.get("holder_count") or 0) >= 350
         and (net_inflow_5m > 0 or float(jup_intel.get("buy_vol_m5") or 0.0) >= float(jup_intel.get("sell_vol_m5") or 0.0) * 1.20)
+        and (
+            (
+                (185_000.0 < mc <= 215_000.0 or 315_000.0 < mc <= 340_000.0)
+                and vol_m5 >= max(12_000.0, mc * 0.045)
+                and float(jup_intel.get("buy_vol_m5") or 0.0) >= max(7_500.0, mc * 0.028)
+                and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.35
+                and (4.5 <= p_m5 <= 28.0)
+                and int(jup_intel.get("holder_count") or 0) >= 350
+            )
+            or (
+                # V11.3 MODUS #83C: Rak Konsolidasi Higher-Low Pasca Wave-1 ($178K-$215K / $315K-$340K T-2H Shelf)
+                (178_000.0 < mc <= 215_000.0 or 315_000.0 < mc <= 340_000.0)
+                and vol_m5 >= max(8_500.0, mc * 0.032)
+                and float(jup_intel.get("buy_vol_m5") or 0.0) >= max(5_000.0, mc * 0.020)
+                and float(jup_intel.get("dev_bal_pct") or 0.0) <= 0.15
+                and float(jup_intel.get("sniper_pct") or 0.0) < 4.5
+                and float(jup_intel.get("insider_pct") or 0.0) < 3.0
+                and float(jup_intel.get("bundle_hold_pct") or 0.0) < 3.5
+                and float(jup_intel.get("bot_holders_pct") or 0.0) < 26.0
+                and (1.5 <= p_m5 <= 28.0)
+                and int(jup_intel.get("holder_count") or 0) >= 600
+                and int(jup_intel.get("net_buyers_m5") or 0) >= 6
+                and _w2_real_org_h1
+            )
+        )
     )
 
     # MODE F (V11.2 MODUS #65/#82 — LAZARUS CTO REVIVAL GATEWAY TERKALIBRASI KETAT):
@@ -4809,7 +4912,13 @@ def evaluate_market_candidate(
         )
 
     # PENANGKAL V2.7A (0ms RAM): Blokir Pantulan Ampas Pasca-Puncak Intraday ($Marvin 1 PM Guard)
-    if not _is_trap_rev_s1 and 75.0 <= age_minutes <= 1440.0 and vol_h24 > (vol_h1 * 1.5) and vol_h24 >= (mc * 5.0):
+    if (
+        not _is_trap_rev_s1
+        and not (_is_pre_pump_s1 and _pre_pump_meta_s1.get("is_active_wave2_base_coil"))
+        and 75.0 <= age_minutes <= 1440.0
+        and vol_h24 > (vol_h1 * 1.5)
+        and vol_h24 >= (mc * 5.0)
+    ):
         prior_hours = max(0.5, (min(1440.0, age_minutes) - 60.0) / 60.0)
         prior_hourly_vol = max(0.0, vol_h24 - vol_h1) / prior_hours
         if prior_hourly_vol > 0.0 and vol_h1 < (prior_hourly_vol * 0.22):
@@ -5795,9 +5904,13 @@ def evaluate_market_candidate(
     _j_ob5_s1 = float((_jup_s1 or {}).get("buy_organic_vol_m5") or 0.0)
     _j_ob1_s1 = float((_jup_s1 or {}).get("buy_organic_vol_h1") or 0.0)
     _j_b1_s1 = float((_jup_s1 or {}).get("buy_vol_h1") or 0.0)
+    _has_org_m5_k_s1 = bool(_jup_s1 and ("buy_organic_vol_m5" in _jup_s1) and _jup_s1.get("has_organic_vol_m5_telemetry", True))
+    _has_org_h1_k_s1 = bool(_jup_s1 and ("buy_organic_vol_h1" in _jup_s1) and _jup_s1.get("has_organic_vol_h1_telemetry", True))
     _is_low_organic_intraday_pump = bool(
-        (_j_b5 >= 20_000.0 and (_j_ob5_s1 / max(1.0, _j_b5)) < 0.08)
-        or (_j_b1_s1 >= 80_000.0 and (_j_ob1_s1 / max(1.0, _j_b1_s1)) < 0.06)
+        (_has_org_m5_k_s1 and _j_b5 >= 3_500.0 and (_j_ob5_s1 / max(1.0, _j_b5)) < 0.05)
+        or (_has_org_m5_k_s1 and _j_b5 >= 20_000.0 and (_j_ob5_s1 / max(1.0, _j_b5)) < 0.08)
+        or (_has_org_h1_k_s1 and _j_b1_s1 >= 45_000.0 and (_j_ob1_s1 / max(1.0, _j_b1_s1)) < 0.085)
+        or (_has_org_h1_k_s1 and _j_b1_s1 >= 80_000.0 and (_j_ob1_s1 / max(1.0, _j_b1_s1)) < 0.06)
     )
     _is_mid_parabolic_low_org = bool(
         not has_heavy_dev_cap
@@ -5840,6 +5953,27 @@ def evaluate_market_candidate(
             False,
             f"ANTI-TELAT KLIMAKS PARABOLIK INTRADAY: MC ${mc:,.0f} sudah terbang vertikal (H1 +{p_h1:.0f}%, M5 +{p_m5:.1f}%) -> Rawan beli tepat di puncak distribusi!",
             {}
+        )
+    if (
+        age_minutes > 15.0
+        and mc >= 165_000.0
+        and not _is_multiday_rebound_s1
+        and not _is_mega_steady_s1
+        and p_h6 >= 420.0
+        and (
+            (_is_low_organic_intraday_pump and p_m5 >= 16.0)
+            or (
+                (age_minutes > 1440.0 or (mc >= 760_000.0 and not has_heavy_dev_cap))
+                and (p_m5 >= 24.0 or (p_h1 >= 140.0 and p_m5 >= 18.0))
+            )
+        )
+        and not (is_verified_mature_cult and not _is_low_organic_intraday_pump and p_m5 < 24.0)
+    ):
+        return (
+            False,
+            f"MODUS #83B (Klimaks Parabolik Lintas-Usia H6): MC ${mc:,.0f} (usia {age_minutes:.0f}m) sudah melonjak "
+            f"H6 +{p_h6:.0f}% / H1 +{p_h1:.0f}% / M5 +{p_m5:.1f}% -> Dilarang masuk tepat di pucuk euforia!",
+            {},
         )
     if (
         age_minutes <= 240.0
@@ -10622,7 +10756,9 @@ def evaluate_anti_countertrade_shakeout_shield(
         if all_3_green and o_first > 0.0 and o_last > 0.0 and not _allow_early_hot_staircase:
             surge_3bar = ((c_last - o_first) / o_first) * 100.0
             ext_last = ((c_last - o_last) / o_last) * 100.0
-            if surge_3bar >= 72.0 and ext_last >= 36.0:
+            if (surge_3bar >= 72.0 and ext_last >= 36.0) or (
+                age_minutes > 45.0 and mc >= 260_000.0 and surge_3bar >= 75.0 and ext_last >= 16.0
+            ):
                 return (
                     False,
                     f"MODUS #32 (Anti-Kejar Pucuk / Tabrakan Auto-TP Kompetitor): 3 candle hijau vertikal memompa +{surge_3bar:.0f}% "
@@ -11322,12 +11458,30 @@ def evaluate_ohlcv_ath_trap(
             and not (is_sovereign_steady_climber_gateway and (is_verified_cto or age_minutes > 1440.0))
             and not (is_early_graduation_breakout and age_minutes <= 15.0)
         ):
-            for hist_row in valid_candles[-10:-1]:
+            _win10_76b = valid_candles[-10:-1]
+            for _h_idx, hist_row in enumerate(_win10_76b):
                 rh = float(hist_row[2] or 0.0)
                 rl = float(hist_row[3] or 0.0)
                 rc = float(hist_row[4] or 0.0)
                 rvol = float(hist_row[5] or 0.0)
                 if rh > 0.0 and rl > 0.0 and rl <= (rh * 0.54) and rc <= (rh * 0.72) and rvol >= max(12_000.0, current_mc_usd * 0.08):
+                    _slice_start = max(0, len(valid_candles) - 10) + _h_idx
+                    _after_hist = valid_candles[_slice_start + 1:]
+                    _resolved_wave1_shelf = False
+                    if len(_after_hist) >= 4:
+                        _after_pk_idx = max(range(len(_after_hist)), key=lambda idx_k: float(_after_hist[idx_k][2] or 0.0))
+                        _after_pk_h = float(_after_hist[_after_pk_idx][2] or 0.0)
+                        _shelf_bars = _after_hist[_after_pk_idx + 1:]
+                        if (
+                            _after_pk_h >= max(rh * 1.10, rl * 1.85)
+                            and len(_shelf_bars) >= 3
+                            and current_price_usd <= (_after_pk_h * 0.92)
+                        ):
+                            _shelf_lows = [float(sb[3] or 0.0) for sb in _shelf_bars if float(sb[3] or 0.0) > 0.0]
+                            if _shelf_lows and min(_shelf_lows) >= (rl * 1.65):
+                                _resolved_wave1_shelf = True
+                    if _resolved_wave1_shelf:
+                        continue
                     hist_slam_pct = ((rh - rl) / rh) * 100.0
                     return (
                         False,
@@ -11444,10 +11598,15 @@ def evaluate_ohlcv_ath_trap(
             or (415_000.0 <= current_mc_usd <= 525_000.0)
             or (750_000.0 <= current_mc_usd <= 1_060_000.0)
         )
-        if current_mc_usd >= 165_000.0 and sess_exp_mult >= 5.2 and (
-            (near_psych_ceiling and last_pump_pct >= 16.0)
-            or (current_mc_usd >= 360_000.0 and last_body_pct >= 22.0)
-            or (165_000.0 <= current_mc_usd < 360_000.0 and last_body_pct >= 24.0)
+        if (
+            current_mc_usd >= 165_000.0
+            and sess_exp_mult >= 5.2
+            and not (max_high_price > 0.0 and current_price_usd <= (max_high_price * 0.90) and last_body_pct < 16.0)
+            and (
+                (near_psych_ceiling and last_pump_pct >= 16.0)
+                or (current_mc_usd >= 360_000.0 and last_body_pct >= 22.0)
+                or (165_000.0 <= current_mc_usd < 360_000.0 and last_body_pct >= 24.0)
+            )
         ):
             return (
                 False,
@@ -11482,7 +11641,8 @@ def evaluate_ohlcv_ath_trap(
         _rng_p = _lh_p - _ll_p
         if _exp_mult_p >= 2.2 and _ll_p > 0.0 and _rng_p > 0.0:
             if (
-                (_rng_p / _ll_p) >= 0.08
+                (max_high_price <= 0.0 or _lh_p >= (max_high_price * 0.88))
+                and (_rng_p / _ll_p) >= 0.08
                 and ((_lh_p - max(_lo_p, _lc_p)) / _rng_p) >= 0.50
                 and ((_lh_p - _lc_p) / _rng_p) >= 0.50
                 and current_price_usd <= (_lh_p * 0.985)
@@ -11501,6 +11661,35 @@ def evaluate_ohlcv_ath_trap(
                         f"MODUS #81 (Wyckoff Effort-vs-Result Klimaks): Volume meledak ${ _lv_p:,.0f} (>=2.35x) tapi harga tertahan/tutup di paruh bawah -> Penyerapan distribusi bandar!",
                         {"ath_drawdown_pct": round(((max_high_price - current_price_usd) / max(1e-12, max_high_price)) * 100.0, 1) if max_high_price > current_price_usd else 0.0},
                     )
+        if (
+            not is_15m_or_higher_tf
+            and age_minutes > 45.0
+            and current_mc_usd >= 260_000.0
+            and len(valid_candles) >= 5
+            and max_high_price > 0.0
+            and current_price_usd >= (max_high_price * 0.90)
+        ):
+            _green_streak = 0
+            _streak_first_o = 0.0
+            for _sr_bar in reversed(valid_candles[-6:]):
+                _so = float(_sr_bar[1] or 0.0)
+                _sc = float(_sr_bar[4] or 0.0)
+                if _so > 0.0 and _sc > _so:
+                    _green_streak += 1
+                    _streak_first_o = _so
+                else:
+                    break
+            _win10_lows = [float(r[3] or 0.0) for r in valid_candles[-10:] if float(r[3] or 0.0) > 0.0]
+            _win10_min_l = min(_win10_lows) if _win10_lows else 0.0
+            _win10_exp = (max(max_high_price, current_price_usd) / _win10_min_l) if _win10_min_l > 0.0 else 1.0
+            _streak_gain_pct = (((_lc_p - _streak_first_o) / _streak_first_o) * 100.0) if _streak_first_o > 0.0 else 0.0
+            if _green_streak >= 3 and _streak_gain_pct >= 65.0 and _win10_exp >= 2.0:
+                return (
+                    False,
+                    f"MODUS #83B (Klimaks Vertikal {_green_streak}-Bar di Pucuk): Harga baru memompa +{_streak_gain_pct:.0f}% "
+                    f"dalam {_green_streak} candle beruntun ({_win10_exp:.1f}x dasar lokal) di MC ${current_mc_usd:,.0f} tanpa konsolidasi -> Rawan dibanting!",
+                    {"ath_drawdown_pct": round(((max_high_price - current_price_usd) / max(1e-12, max_high_price)) * 100.0, 1) if max_high_price > current_price_usd else 0.0},
+                )
 
     if max_high_price <= 0.0 or current_price_usd >= max_high_price:
         if is_scalper_trap_reversal:
@@ -11552,6 +11741,7 @@ def evaluate_ohlcv_ath_trap(
 
     allow_cto_reclaim_ath = False
     is_confirmed_multiday_floor_rebound = False
+    is_multiday_dry_floor_coil = False
     _min_reclaim_bar_vol = (
         0.0
         if has_heavy_dev_capital
@@ -11615,6 +11805,46 @@ def evaluate_ohlcv_ath_trap(
                 and cto_g_vol >= max(1.0, cto_r_vol * 1.25)
             ):
                 is_confirmed_multiday_floor_rebound = True
+
+    # V11.3 MODUS #83C (Deteksi Dini T-2H Lantai Kering Higher-Low Multi-Day — Kasus $DCI $401K sebelum reli $1.34M):
+    if (
+        age_minutes > 1440.0
+        and len(valid_candles) >= 5
+        and recent_max_vol >= (0.0 if has_heavy_dev_capital else 8_000.0)
+    ):
+        _df_peak_idx = max(range(len(valid_candles)), key=lambda idx_k: float(valid_candles[idx_k][2] or 0.0))
+        if _df_peak_idx <= (len(valid_candles) - 4):
+            _df_post_lows = [float(r[3] or 0.0) for r in valid_candles[_df_peak_idx + 1:] if float(r[3] or 0.0) > 0.0]
+            _df_post_low = min(_df_post_lows) if _df_post_lows else 0.0
+            if _df_post_low > 0.0:
+                _df_last3 = valid_candles[-3:]
+                _df_l1 = float(_df_last3[1][3] or 0.0)
+                _df_l2 = float(_df_last3[2][3] or 0.0)
+                _df_last_o = float(_df_last3[2][1] or 0.0)
+                _df_last_h = float(_df_last3[2][2] or 0.0)
+                _df_last_c = float(_df_last3[2][4] or 0.0)
+                _df_prev_c = float(_df_last3[1][4] or 0.0)
+                _df_rng = max(1e-12, _df_last_h - _df_l2)
+                _df_close_pos = ((_df_last_c - _df_l2) / _df_rng) if _df_last_h > _df_l2 else 0.5
+                _df_l2_high = max(float(_df_last3[1][2] or 0.0), _df_last_h)
+                _df_g_vol = sum(float(r[5] or 0.0) for r in _df_last3 if float(r[4] or 0.0) >= float(r[1] or 0.0))
+                _df_r_vol = sum(float(r[5] or 0.0) for r in _df_last3 if float(r[4] or 0.0) < float(r[1] or 0.0))
+                _df_higher_low_floor = (
+                    min(_df_l1, _df_l2) >= (_df_post_low * 1.02)
+                    and _df_l2 >= (_df_l1 * 0.995)
+                    and _df_last_c >= (_df_post_low * 1.06)
+                )
+                if (
+                    _df_higher_low_floor
+                    and _df_last_o > 0.0
+                    and _df_last_c > _df_last_o
+                    and _df_last_c >= _df_prev_c
+                    and _df_close_pos >= 0.55
+                    and _df_l2_high > 0.0
+                    and current_price_usd >= (_df_l2_high * 0.88)
+                    and _df_g_vol >= max(1.0, _df_r_vol * 0.85)
+                ):
+                    is_multiday_dry_floor_coil = True
 
     if is_scalper_trap_reversal:
         allow_cto_reclaim_ath = True
@@ -11749,7 +11979,7 @@ def evaluate_ohlcv_ath_trap(
         age_minutes > 1440.0
         and ath_drawdown_pct >= 55.0
         and vol_vs_peak_ratio < 0.50
-        and not (allow_cto_reclaim_ath or is_confirmed_multiday_floor_rebound)
+        and not (allow_cto_reclaim_ath or is_confirmed_multiday_floor_rebound or is_multiday_dry_floor_coil)
     ):
         return (
             False,
@@ -15389,7 +15619,7 @@ class handler(BaseHTTPRequestHandler):
             active_mm = _load_active_mm_positions()
             active_peak = _load_active_peak_positions()
             response_data = {
-                "service": "Corridor Sniper V11.0 — Omni-7-Pillar Pre-Pump & Zero-Blind-Time Scanner (MODUS #80) (<7.5s)",
+                "service": "Corridor Sniper V11.3 — Anti-Peak Climax, Spoofed-Organic Shield, & T-2H Early Pattern Engine (MODUS #83) (<7.5s)",
                 "status": "healthy",
                 "python_version": sys.version.split()[0],
                 "engine_loaded": engine is not None,
@@ -15549,7 +15779,7 @@ class handler(BaseHTTPRequestHandler):
                 compact_scan["skipped_count"] = max(0, len(scan_summary.get("evaluations") or []) - len(notable_evals))
                 compact_scan["evaluations"] = notable_evals[:10]
                 response_data = {
-                    "service": "Corridor Sniper V11.2",
+                    "service": "Corridor Sniper V11.3",
                     "status": "ok",
                     "is_cron_call": is_cron,
                     "timestamp": round(time.time(), 2),
@@ -15557,7 +15787,7 @@ class handler(BaseHTTPRequestHandler):
                 }
             else:
                 response_data = {
-                    "service": "Corridor Sniper V11.2 — Precision-First Anti-False-Breakout & Institutional Flow Engine (MODUS #82) (<7.5s)",
+                    "service": "Corridor Sniper V11.3 — Anti-Peak Climax, Spoofed-Organic Shield, & T-2H Early Pattern Engine (MODUS #83) (<7.5s)",
                     "status": "ready",
                     "is_cron_call": is_cron,
                     "timestamp": time.time(),
@@ -15581,6 +15811,7 @@ class handler(BaseHTTPRequestHandler):
                         "deadzone_6_blocked": "> $8.80M (Area Late-Stage Dekat $10M+ DIBLOKIR, Kawal via Moonbag)"
                     },
                     "execution_and_delay_shields": [
+                        "Modus #83 V11.3 Anti-Peak Climax & T-2H Early Pattern Engine (Kasus $ANT & $DCI): (1) #83A Blokir Volume Semu Organik Palsu Lintas-MC (<8.5% beli organik 1j meski OrganicScore ~68, beli 5m <3% organik, & Kawanan Bot Pabrik >=30% + iconReused/devMints>=300 di MC >=$350K); (2) #83B Blokir Klimaks Parabolik Lintas-Usia H6 >=+420% & Klimaks Vertikal Multi-Bar >=3 candle hijau >=+65% di puncak; (3) #83C Deteksi Dini Pola T-2H: Rak Konsolidasi Higher-Low Pasca Wave-1 ($178K-$215K) & Lantai Kering Higher-Low Multi-Day sebelum lonjakan vertikal",
                         "Modus #82 V11.2 Precision-First Anti-False-Breakout Overhaul: (1) Pengetatan Jalur Kebangkitan Komunitas (wajib >=120m, H1 hijau >=+8%, Vol >=$9K-$14K/5m & >=$30K/1j, B/S >=1.20x-1.32x, Org >=56, Net Buyer >=+6); (2) Pengetatan Jalur Kenaikan Pelan Non-Mega (wajib M5 >=+2.2%, H1 >=+6%, H6 >=+10%, Accel >=0.85x, Org >=58, Holders >=400); (3) Tutup Blindspot Early Graduation (<$118K wajib OrganicScore >=42-52, Traders >=20, Net Buyer >=+6, USD Buy >=1.22x-1.28x, & hapus bypass Shooting-Star/Wyckoff/Klimaks); (4) Veto OHLCV Reclaim Palsu, Red Exhaustion DNA, Net Buyer Negatif 7-Pilar, & Wash-Pump Mid-Volume >=$6K Org<30",
                         "Modus #81 V11.1 Holistic Anti-Peak & Forward-Upside Confluence Guard: (1) Veto Shooting-Star Blow-Off Puncak & Wyckoff Effort-vs-Result Klimaks lintas-jalur termasuk ATH & MM-Micro; (2) Perluasan Klimaks Parabolik Dini $65K-$165K & Kelelahan Ujung Lorong/Volume Menyusut; (3) Penegakan Penuh Konfluensi 7-Pilar (Veto Dev RECOVERED_OR_EXITING, USD Siphon Live, & Konfluensi Lemah); (4) Penutupan Blindspot Koin Lama/Mid-Cap (3-Bar Bleed, Red Dump Expansion, Waterfall Lintas-Usia, & Grafik 1m s/d $650K)",
                         "Modus #80 V11.0 Omni-7-Pillar Pre-Pump & Zero-Blind-Time Architecture: (1) Konfluensi 7 Pilar (Dev Sunk-Cost & Incentive, Multi-Wallet Smart Money Convergence & Stealth Whale Absorption, Buy Pressure & Supply Absorption, Holder & Gradual-Sell Monitor, Trajektori Likuiditas & Stealth LP-Drain Shield, Revival Koin Lama & Early Coil Koin Baru, serta Anti-Manipulasi Fail-Closed); (2) Intake 120 kandidat + 10 audit Stage-2 paralel penuh <7.5d",
@@ -15592,13 +15823,13 @@ class handler(BaseHTTPRequestHandler):
                         "V6.6 Conditional Fresh Capital Injection Gate ($142k-$250k HANYA JIKA LP Hard-SOL aktif >=$4k atau Iklan/Boost >=$999 baru disuntikkan <=15m)",
                         "Modus #50 V6.5 Quad-Oracle Solana Security Failover (GoPlus Solana + Jupiter Audit + Jupiter Shield + Solana RPC saat RugCheck HTTP 400 tumbang)",
                         "Hard-Deadline Anti-Timeout V6.4 (<7.5d di bawah limit 10d Vercel Hobby) + Compact Cron Payload (<2KB untuk cron-job.org)",
-                        "82 Modus Keamanan Anti-Rug, Anti-Pucuk, Anti-Wash, & Pre-Pump 7-Pilar Aktif Penuh"
+                        "83 Modus Keamanan Anti-Rug, Anti-Pucuk, Anti-Wash, & Pre-Pump 7-Pilar Aktif Penuh"
                     ]
                 }
 
         else:
             response_data = {
-                "service": "Corridor Sniper V11.2 — Precision-First Anti-False-Breakout & Institutional Flow Engine (MODUS #82)",
+                "service": "Corridor Sniper V11.3 — Anti-Peak Climax, Spoofed-Organic Shield, & T-2H Early Pattern Engine (MODUS #83)",
                 "status": "ready",
                 "timestamp": time.time(),
                 "endpoints": {
